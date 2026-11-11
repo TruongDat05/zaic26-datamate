@@ -1,0 +1,46 @@
+# Dữ liệu: không đưa lên repo (quy định 4.3: dữ liệu thi ở lại trong đội)
+#   data/                      dữ liệu của BTC (train/, public_test/) và bộ SFT tổng hợp (mỗi dòng nhúng rulebook của BTC)
+#   assets/fewshot_bank.jsonl  câu hỏi train của BTC kèm SQL; tạo lại bằng training/build_fewshot_bank.py
+#   configs/public_v9/         view và lớp công nợ của các shop public test
+data/
+assets/fewshot_bank.jsonl
+configs/public_v9/
+
+# Trọng số gốc, kết quả chạy, bản đóng gói Docker
+models/
+runs/
+outputs/
+build/
+result/
+*.tar
+*.tar.gz
+*.tar.gz.md5
+
+# Python, notebook, công cụ
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+unsloth_compiled_cache/
+wandb/
+*.log
+
+# Editor, hệ điều hành, thông tin bí mật
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+.env
+.env.*
+.claude/settings.local.json
+
+# Không rõ nguồn gốc
+code.zip
+litreview-*.pdf

@@ -1,0 +1,13 @@
+# BF16 LoRA training stack (training/train_lora_bf16.py, notebooks/05_train_lora.ipynb), in its own venv apart from vLLM.
+# No Unsloth / bitsandbytes: the base model stays in bfloat16, nothing is quantized.
+#   python3 -m venv .venv-train
+#   .venv-train/bin/pip install -r training/requirements_bf16.txt
+#   .venv-train/bin/pip install --no-deps fla-core==0.6.0      # Gated DeltaNet kernels (training/check_fla.py checks them)
+torch==2.14.1
+transformers==5.17.0
+peft==0.21.2
+accelerate==1.15.0
+safetensors>=0.5
+huggingface_hub>=0.30
+einops>=0.8                # the one dependency of fla-core, which is installed with --no-deps (so it keeps this torch)
+tensorboard>=2.18          # optional: --report-to tensorboard
