@@ -9,7 +9,7 @@ trả lời khi các mẫu đủ đồng thuận. Đáp án có kiểu (`number`
 
 |                   |                                                                                                 |
 | ----------------- | ----------------------------------------------------------------------------------------------- |
-| Điểm public       | (bản nộp v9). Thang điểm Penalized Accuracy: đúng +1, bỏ trống 0, sai −1               |
+| Điểm public       | 70 . Thang điểm Penalized Accuracy: đúng +1, bỏ trống 0, sai −1               |
 | Mô hình           | Qwen3.5-9B (Apache-2.0) + LoRA `sql_rft_v3` (43M), tổng 9,70B tham số (giới hạn 15B)             |
 | Chạy private test | Docker offline, 2 × RTX 5090, tối đa 6 giờ kể cả nạp model                                       |
 
