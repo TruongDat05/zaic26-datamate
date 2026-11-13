@@ -1,6 +1,7 @@
 """Hồi quy oracle btc_v1 (eval/sqlv1/world.py) theo rules_spec: mỗi quy ước một trường hợp dựng tay.
 Phần SQL (phân loại trạng thái trong SELECT ánh xạ) cần duckdb: chạy bằng venv upstream, venv cũ thì bỏ qua."""
 import copy
+import os
 import sys
 from pathlib import Path
 
@@ -172,6 +173,8 @@ def _q(slot, typ="number", question="Doanh thu tháng 6/2025 bao nhiêu?", perio
             "question": question}
 
 
+@pytest.mark.skipif(not os.environ.get("DATAMATE_UPSTREAM"), reason="requires an explicit external SQL runtime; run this file in a separate process")
+@pytest.mark.sql_runtime
 def test_semantic_checks_catch_coincidental_convention_errors():
     pytest.importorskip("duckdb")
     from sqlv1 import verify as V
@@ -195,8 +198,7 @@ def test_semantic_checks_catch_coincidental_convention_errors():
 
 def test_unsafe_status_substring_predicate_flagged():
     """QA của bundle SFT v2: mẫu LIKE một từ trạng thái ('%huy%' khớp 'vận chuyển') bị loại; cụm nhiều từ theo luật thì không."""
-    pytest.importorskip("duckdb")  # sqlv1.bundle nạp upstream (venv upstream), như các test cần upstream khác
-    from sqlv1.bundle import unsafe_status_predicate
+    from sqlv1.sqlgen import unsafe_status_predicate
     assert unsafe_status_predicate("WHERE NOT strip_accents(lower(st)) LIKE '%huy%'") == ["%huy%"]
     assert unsafe_status_predicate("WHERE lower(x) ILIKE '%Hủy%' OR y LIKE '%tra%'") == ["%Hủy%", "%tra%"]
     assert unsafe_status_predicate("WHERE s LIKE '%khong giao duoc%' OR s LIKE '%tra hang%' OR regexp_matches(k, '(^|_)huy(_|$)')") == []

@@ -95,6 +95,7 @@ def test_months_ending():
     assert [m.start for m in ms] == [D(2025, 11, 1), D(2025, 12, 1), D(2026, 1, 1)]
 
 
+@pytest.mark.skipif(not (ROOT / "data/train/calendar.csv").is_file(), reason="requires local train calendar")
 def test_tet():
     cal = timeutil.LunarCalendar(ROOT / "data" / "train" / "calendar.csv")
     t = cal.tet(2026)  # mùng 1 Tết Bính Ngọ 2026 = 17/02/2026
@@ -149,6 +150,7 @@ def test_extract_code():
 
 # ---------------------------------------------------------------- score
 
+@pytest.mark.skipif(not (ROOT / "data/train/answers.jsonl").is_file(), reason="requires local train answers")
 def test_score_matches_gold_on_itself():
     gold = score.load_jsonl(ROOT / "data" / "train" / "answers.jsonl")
     res, _ = score.score(gold, gold)
@@ -168,6 +170,7 @@ def test_score_rules():
     assert score.match({"type": "table", "answer": {"columns": ["x", "y"], "rows": [["kh2", 2], ["A", 1]]}}, tg) == 1
 
 
+@pytest.mark.skipif(not (ROOT / "data/train/questions.jsonl").is_file(), reason="requires local train questions")
 def test_variants_see_different_examples():
     from datamate.agent import Agent, DEFAULT_VARIANTS
     from datamate.fewshot import FewShot

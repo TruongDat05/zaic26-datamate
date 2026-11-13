@@ -1,6 +1,7 @@
 """eval/show_trace.py dựng lại được luồng trả lời từ log của Agent: phiếu, lượt sửa lỗi, đáp án, prompt."""
 import json
 import sys
+import pytest
 from pathlib import Path
 
 import yaml
@@ -14,6 +15,7 @@ from datamate.run import cache_path, make_fewshot  # noqa: E402
 import show_trace as trace_mod  # noqa: E402
 
 DATA = ROOT / "data" / "train"
+pytestmark = pytest.mark.skipif(not (DATA / "questions.jsonl").is_file(), reason="requires local competition train data")
 CACHE = ROOT / "outputs" / "cache"
 QID = "q_158b312e8f5b"  # doanh thu tháng 6/2025 của biz_118
 GOOD = ("s = T['So_chi_tiet_ban_hang']\nbad = set(s.loc[s['Trạng thái'].map(dm.norm_status).isin(['huy', 'tra_hang']), 'Mã đơn hàng'])\n"

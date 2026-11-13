@@ -2,6 +2,15 @@
 
 Pipeline sinh dữ liệu tổng hợp cho bài toán trả lời câu hỏi tiếng Việt trên sổ bán hàng. Mỗi mẫu kết hợp dữ liệu shop, câu hỏi, đáp án chuẩn và lời giải SQL đã kiểm chứng.
 
+Repo giữ **hai nhánh riêng biệt**, mỗi nhánh có code và môi trường Python riêng:
+
+| Nhánh | Mục đích |
+| --- | --- |
+| [`main`](https://github.com/TruongDat05/zaic26-datamate/tree/main) | Inference, đánh giá, train LoRA và Docker nộp bài. |
+| [`synthetic_data`](https://github.com/TruongDat05/zaic26-datamate/tree/synthetic_data) | Sinh shop, câu hỏi, lời giải và kiểm chứng dữ liệu tổng hợp. |
+
+Hai nhánh cùng có package tên `datamate` nhưng giao diện khác nhau. Dùng checkout/worktree riêng; PR sửa pipeline sinh data phải có base là `synthetic_data`. Xem [cách làm việc với hai nhánh](docs/branches.md).
+
 ![Workflow sinh synthetic data cho DataMate](docs/assets/synthetic-data-workflow.png)
 
 ## Quy trình
@@ -27,27 +36,54 @@ Pipeline sinh dữ liệu tổng hợp cho bài toán trả lời câu hỏi ti�
 
 ## Cài đặt
 
-Cần Python 3.12, `uv` và runtime SQL tương thích có `datamate/`, `harness_control/`, `training/`.
+Cần Python 3.12 và `uv`. Các kiểm thử sandbox dùng Linux có Landlock ABI ≥ 4 và `libseccomp.so.2`. Bắt đầu bằng môi trường CPU của nhánh sinh dữ liệu:
 
 ```bash
-export DATAMATE_CONTROLLER=/absolute/path/to/datamate_foxel
-export DATAMATE_UPSTREAM="$DATAMATE_CONTROLLER"
+git clone --branch synthetic_data https://github.com/TruongDat05/zaic26-datamate.git zaic26-datamate-synth
+cd zaic26-datamate-synth
 
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
+export SYNTH_PY="$PWD/.venv/bin/python"
+"$SYNTH_PY" eval/check_setup.py
+"$SYNTH_PY" -m pytest -q -rs
+```
+
+Luồng SQL cần runtime ngoài nhánh này. Có thể dùng checkout `main` cho bước dựng shop/kiểm SQL; bước đóng gói và export còn cần controller/snapshot tương thích `offline_candidates/1` (xem bảng bên dưới).
+
+```bash
+git fetch origin
+git worktree add --detach ../datamate-inference origin/main
+export DATAMATE_UPSTREAM="$(cd ../datamate-inference && pwd)"
 
 uv venv --python 3.12 .venv-sql
 uv pip install --python .venv-sql/bin/python \
-  -r requirements.txt -e "${DATAMATE_CONTROLLER}[dev]"
+  -r requirements.txt -e "$DATAMATE_UPSTREAM"
 
-export SYNTH_PY="$PWD/.venv/bin/python"
 export SQL_PY="$PWD/.venv-sql/bin/python"
-cp .env.example .env
+test -f .env || cp .env.example .env
 ```
 
-Điền các biến API trong [`.env.example`](.env.example): `API_*` cho DeepSeek 4 Flash, `MK_*` cho Qwen 3.8 27B và `GEMINI_*` cho Gemini. `DATAMATE_CONTROLLER` chứa công cụ và `build/`; `DATAMATE_UPSTREAM` chọn runtime hoặc snapshot dùng để kiểm chứng. Giữ cùng revision runtime trong một lượt sinh và export.
+Điền các biến API trong [`.env.example`](.env.example): `API_*` cho DeepSeek 4 Flash, `MK_*` cho Qwen 3.8 27B và `GEMINI_*` cho Gemini. Chỉ các lệnh sinh qua model/audit LLM mới cần khóa API; cài đặt, `check_setup.py` và kiểm thử CPU không gọi API.
 
 Đặt dữ liệu nguồn trong `data/train/`, gồm `data/<business_id>/`, `questions.jsonl`, `answers.jsonl`, `calendar.csv` và `rulebook.md`. Bước dựng nguồn giữ `pandas==2.2.3` theo `requirements.txt`.
+
+| Bước | Điều kiện bổ sung |
+| --- | --- |
+| Dựng nguồn (`--stage source`) | Bộ train cục bộ trong checkout `synthetic_data`. |
+| Dựng shop/kiểm SQL (`--stage sql`) | `DATAMATE_UPSTREAM/datamate/` có runtime SQL; DuckDB 2.0.0 trong `SQL_PY`. |
+| Đóng gói/export (`--stage export`) | `DATAMATE_CONTROLLER` có `harness_control/{evaluate,exec_guard,scorer}.py`, `training/{sft_format,make_synthetic_fixture,offline_candidates,build_sft}.py`; runtime có `datamate/snapshot.py` và `training/make_synthetic_fixture.py`. |
+
+**Controller/exporter chưa nằm trong hai nhánh này.** `main/training/build_sft.py` dựng SFT từ trace và không hỗ trợ `--offline-candidates`; không dùng nó thay exporter SFT v2. Đặt `DATAMATE_CONTROLLER` tới checkout tương thích, chọn `DATAMATE_UPSTREAM` tương ứng **trước khi bắt đầu lượt sinh**, và giữ nguyên revision đến khi export. Nếu chưa đặt biến, code giữ mặc định controller ở thư mục anh em `../datamate_foxel`.
+
+```bash
+"$SYNTH_PY" eval/check_setup.py --stage source
+"$SQL_PY" eval/check_setup.py --stage sql
+# Sau khi cấu hình controller và runtime đầy đủ:
+"$SQL_PY" eval/check_setup.py --stage export
+```
+
+Các lệnh trên chỉ kiểm phiên bản/phụ thuộc và tệp cần có; không thay thế kiểm chứng pipeline thực tế.
 
 ## Generate dữ liệu
 
@@ -83,6 +119,19 @@ eval/synth_*.py     Mô phỏng và công cụ corpus dùng chung
 eval/synth_prompts/ Prompt sinh dữ liệu
 tests/              Kiểm contract và regression
 docs/assets/        Ảnh workflow
+.github/workflows/  Kiểm thử CPU cho PR vào synthetic_data
 ```
 
 Dữ liệu và artifact chạy nằm trong `data/`, `outputs/` và thư mục `build/` của controller. `.gitignore` loại dữ liệu, output, cache, log, database, môi trường ảo, khóa API và model weights khỏi các commit mới.
+
+## Kiểm thử
+
+`"$SYNTH_PY" -m pytest -q -rs` chạy kiểm thử CPU với dữ liệu tự tạo; các test cần dữ liệu thi hoặc hồ sơ mining báo `skip` khi thiếu đầu vào. Test mang marker `sql_runtime` được tách khỏi lệnh mặc định. CI dùng cùng lệnh, thêm DuckDB 2.0.0 để kiểm biểu thức SQL cục bộ. Sandbox luôn giữ giới hạn filesystem/network; môi trường thiếu hỗ trợ isolation sẽ báo lỗi.
+
+Chạy kiểm thử quy ước SQL với runtime bằng **tiến trình riêng**, tránh trộn hai package `datamate`:
+
+```bash
+"$SQL_PY" -m pytest -q -o addopts= tests/test_sqlv1_rules.py
+```
+
+Kết quả CPU/SQL offline không xác nhận API provider, chất lượng dữ liệu sinh thực tế hay export SFT khi chưa có controller.

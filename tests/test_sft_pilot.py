@@ -104,8 +104,15 @@ def test_template_token_count_uses_ids_for_both_transformers_apis(response):
     assert template_tokens(Tokenizer(), [{'role':'user','content':'synthetic'}], True)==[10,20,30]
 
 
-def test_forged_mutation_pass_flags_cannot_certify_bad_code(tmp_path):
+def test_forged_mutation_pass_flags_cannot_certify_bad_code(tmp_path, monkeypatch):
+    from functools import partial
+    import build_sft_data
+    from synth_tools import Kit
     from build_sft_data import recheck_for_export
+    source = tmp_path / "source"
+    (source / "guard").mkdir(parents=True)
+    (source / "guard/eval_questions.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setattr(build_sft_data, "Kit", partial(Kit, source=source))
     f = prepare(tmp_path, 'forged', 'joined', 41011)
     row = {'id':'forged', 'shop':'forged', 'family':'joined', 'seed':41011, 'slot':'gross',
            'question':'Doanh thu bán tháng 4/2025?', 'question_canonical':'Doanh thu bán tháng 4/2025?',

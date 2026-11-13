@@ -2,9 +2,13 @@
 
 Thực hiện [cài đặt và chuẩn bị nguồn](../README.md#cài-đặt) trước khi chạy. Các lệnh dưới đây dùng thư mục làm việc chuẩn `outputs/synth_sql_v1/` và cùng runtime `DATAMATE_UPSTREAM` trong cả lượt sinh.
 
+Chạy từ thư mục gốc checkout **`synthetic_data`**. Các script không sửa code nhánh `main`; chỉ nạp runtime đã chọn ở checkout khác. Để hoàn thành toàn bộ quy trình bên dưới cần controller/exporter tương thích `offline_candidates/1`, hiện chưa được phân phối trong hai nhánh.
+
 ## 1. Nguồn và shop tổng hợp
 
 ```bash
+"$SYNTH_PY" eval/check_setup.py --stage source
+"$SQL_PY" eval/check_setup.py --stage sql
 "$SYNTH_PY" eval/build_synth_source.py
 "$SYNTH_PY" eval/build_data_spec.py
 "$SQL_PY" eval/sqlv1/shops.py build --procs 4
@@ -58,7 +62,10 @@ Qwen 3.8 27B giải trước; DeepSeek 4 Flash bổ sung câu chưa đạt. SQL 
 
 ## 4. Chọn mẫu và đóng gói nguồn
 
+Từ bước này cần controller/snapshot đầy đủ đã chọn từ đầu lượt sinh. `package.py` dùng `training/make_synthetic_fixture.py` của runtime để tính content hash; chỉ có runtime inference của `main` là chưa đủ. Không thay runtime giữa một lượt sinh và export; nếu cần revision khác, tạo lượt mới.
+
 ```bash
+"$SQL_PY" eval/check_setup.py --stage export
 "$SQL_PY" eval/sqlv1/package.py \
   --target-rows 6600 --out "$DATAMATE_CONTROLLER/build"
 ```
@@ -73,6 +80,8 @@ Bước chọn cân bằng ngành, kỹ năng, kiểu đáp án, kỳ thời gia
 ## 5. Replay và export SFT
 
 Runtime/snapshot và exporter upstream cần tương thích `offline_candidates/1`.
+
+`training/build_sft.py` trên nhánh `main` có giao diện khác và không dùng cho lệnh export này. Xem [bảng phụ thuộc](../README.md#cài-đặt) và chỉ chạy tiếp khi `check_setup.py --stage export` đạt; cần kiểm chứng thực thi sau kiểm cấu trúc.
 
 ```bash
 export SYNTH_PACKAGE="$DATAMATE_CONTROLLER/build/synthetic_sql_v1"

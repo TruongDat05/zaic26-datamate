@@ -71,6 +71,8 @@ ANSWER = dm.count(m[['Mã đơn hàng', 'Lần giao']].drop_duplicates().shape[0
 
 @pytest.fixture(scope="module")
 def setup():
+    if not (DATA / "questions.jsonl").is_file():
+        pytest.skip("requires local competition train data")
     biz_dir = DATA / "data" / "biz_118"
     loader.load_cached(biz_dir, CACHE)
     qs = {json.loads(l)["id"]: json.loads(l) for l in (DATA / "questions.jsonl").read_text().splitlines()}

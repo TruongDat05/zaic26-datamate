@@ -22,6 +22,7 @@ import json
 import re
 import sys
 import warnings
+from functools import cached_property
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -43,15 +44,24 @@ class Kit:
     def __init__(self, source=ROOT / "data/synth_source", data=ROOT / "data/train", cache=ROOT / "outputs/cache", config=ROOT / "datamate/config.yaml"):
         import yaml
         self.source, self.data, self.cache = Path(source), Path(data), Path(cache)
-        if not (self.source / "splits.json").exists():
-            raise FileNotFoundError(f"Chưa có {self.source}: chạy python eval/build_synth_source.py")
         self.cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
         self.base_rulebook = (self.data / "rulebook.md").read_text(encoding="utf-8")
-        self.splits = json.loads((self.source / "splits.json").read_text(encoding="utf-8"))
-        self.role_of = {b: r for r in ("mining", "tune", "holdout") for b in self.splits[r]}
-        self.cf = {r["id"]: r for r in _jsonl(self.source / "rules/counterfactual.jsonl")}
         self._biz, self._shop, self._agents = {}, {}, {}
         self._seeds = self._profiles = self._guard = None
+
+    @cached_property
+    def splits(self):
+        if not (self.source / "splits.json").exists():
+            raise FileNotFoundError(f"Chưa có {self.source}: chạy python eval/build_synth_source.py")
+        return json.loads((self.source / "splits.json").read_text(encoding="utf-8"))
+
+    @cached_property
+    def role_of(self):
+        return {b: r for r in ("mining", "tune", "holdout") for b in self.splits[r]}
+
+    @cached_property
+    def cf(self):
+        return {r["id"]: r for r in _jsonl(self.source / "rules/counterfactual.jsonl")}
 
     # ------------------------------------------------------------ dữ liệu nguồn
     def seeds(self, roles=("mining",)) -> list[dict]:

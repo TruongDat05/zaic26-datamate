@@ -22,6 +22,7 @@ def _jsonl(p):
 
 # ---------------------------------------------------------------- verifier
 
+@pytest.mark.skipif(not (DATA / "answers.jsonl").is_file(), reason="requires local train answers")
 def test_verifier_accepts_every_train_gold():
     """Quy tắc chỉ được giữ khi không chặn nhầm đáp án chuẩn nào của train."""
     gold = {r["id"]: r for r in _jsonl(DATA / "answers.jsonl")}
@@ -54,6 +55,7 @@ def test_verifier_passes(question, ans):
 
 # ---------------------------------------------------------------- holdout
 
+@pytest.mark.skipif(not (DATA / "questions.jsonl").is_file(), reason="requires local train questions")
 def test_fewshot_excludes_holdout():
     holdout = (ROOT / "eval" / "holdout_businesses.txt").read_text().split()
     fs = FewShot(DATA / "questions.jsonl", DATA / "answers.jsonl", holdout)
@@ -92,6 +94,7 @@ def test_leading_zero_codes_stay_text():
     ("biz_130", "So_chi_tiet_ban_hang", "Trạng thái", "Mã đơn hàng", "Ngày", "Thành tiền", 2026, 6,
      "q_6e9a3164fe79"),  # dòng 'TỔNG NGÀY dd/mm'
 ])
+@pytest.mark.skipif(not (DATA / "answers.jsonl").is_file(), reason="requires local competition train data")
 def test_loader_monthly_revenue_matches_gold(biz, tbl, st, oid, dcol, amt, y, m, qid):
     """Doanh thu tháng tính thẳng từ bảng đã làm sạch phải khớp đáp án chuẩn (lỗi tìm được qua EDA)."""
     from datamate import dm
