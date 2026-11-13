@@ -8,6 +8,13 @@ Phần cần bảng thô (nhập hàng, lô, giá trên dòng, giá vốn, tồn
 from __future__ import annotations
 
 import datetime as dt
+import re
+
+
+def unsafe_status_predicate(sql: str) -> list[str]:
+    """Flag single-word status LIKE patterns that also match unrelated words."""
+    patterns = re.findall(r"(?i)(?:i?like|similar\s+to)\s*'([^']*)'", sql)
+    return sorted({p for p in patterns if p.startswith("%") and p.strip("%").strip().lower() in {"huy", "huỷ", "hủy", "tra", "trả"}})
 
 
 def q(name: str) -> str:

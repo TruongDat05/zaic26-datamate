@@ -199,6 +199,7 @@ def test_data_spec():
     assert not any(t in prompt.lower() for ts in synth_spec.LOCAL_BLOCKLIST.values() for t in ts)  # không gửi danh sách chặn ra API
 
 
+@pytest.mark.skipif(not (SPEC / "shop_complexity.json").is_file(), reason="requires local data_spec")
 def test_data_spec_plan_and_complexity():
     import synth_spec
     cx = json.loads((SPEC / "shop_complexity.json").read_text(encoding="utf-8"))
@@ -263,7 +264,10 @@ def test_llm_helpers_offline():
     with pytest.raises(llm.LeakError):
         llm.guard("ngành sửa xe máy")
     llm.guard("tiệm hoa tươi bán bó hoa hồng 20/10")
-    rb = (ROOT / "data/train/rulebook.md").read_text(encoding="utf-8")
+    rb_path = ROOT / "data/train/rulebook.md"
+    if not rb_path.is_file():
+        pytest.skip("exact rulebook leak check requires local train rulebook; generic checks passed")
+    rb = rb_path.read_text(encoding="utf-8")
     with pytest.raises(llm.LeakError):
         llm.guard("xin chép: " + " ".join(rb.split()[200:215]))
 
@@ -391,6 +395,8 @@ def test_style_layer():
     assert [telex(w) for w in ("tiền", "được", "tháng", "cửa")] == ["tieenf", "dduwowcj", "thangs", "cuwar"]
     vec = {"no_diacritic": True, "abbreviations": ["dthu", "bnhiu"], "fillers": [], "telex": [], "lower_start": True, "no_qmark": True}
     assert style_question("Doanh thu tháng 3/2025 là bao nhiêu?", vec, random.Random(0), {"dthu": 1}, {"vậy": 1}) == "dthu thang 3/2025 la bnhiu"
+    if not (SRC / "style/style_profile.json").is_file():
+        pytest.skip("style distribution check requires local style_profile; pure style checks passed")
     vp = VanPhong(seed=0)
     qs = ["Doanh thu tháng 3/2025 của nhóm Kháng sinh là bao nhiêu?", "Trong tháng 5/2025 có bao nhiêu hoá đơn bị huỷ?",
           "Ba khách hàng mua nhiều tiền nhất quý 1/2025 là ai, xếp từ cao xuống thấp?", "Tỉ lệ hoá đơn huỷ trong tháng 2/2025 là bao nhiêu phần trăm?",
@@ -432,6 +438,7 @@ def _fake_t4(provider, messages, think="off", max_tokens=0, tag="", **kw):
             "finish": "stop", "provider": provider, "reasoning": ""}
 
 
+@pytest.mark.skipif(not (SRC / "style/style_profile.json").is_file(), reason="requires local style_profile")
 def test_bakeoff_t4_offline(tmp_path, monkeypatch):
     """Một lô T4 với model giả: sửa một lượt, trùng, sai dạng ngày, khó thật, model giải chính lệch dạng, câu viết lại lệch nghĩa bị bỏ."""
     import pickle
@@ -492,5 +499,7 @@ def test_style_features():
     assert synth_spec.telex_words("Sơn Dulux 5L bán bao nhiêu", frozenset({"dulux"})) == []
     s = b.style_of("tong dthu thang 3 bnhiu z")
     assert s["no_diacritic"] and s["lower_start"] and s["no_qmark"] and "dthu" in s["abbreviations"] and not s["telex"]
+    if not (SRC / "style/style_profile.json").is_file():
+        pytest.skip("style distribution check requires local style_profile; pure feature checks passed")
     prof = json.loads((SRC / "style/style_profile.json").read_text(encoding="utf-8"))
     assert {"khong_dau", "co_viet_tat", "co_tu_dem", "go_telex", "chu_thuong_dau", "khong_dau_hoi"} <= set(prof["ti_le"])

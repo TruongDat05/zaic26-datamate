@@ -49,6 +49,7 @@ A = _args() if __name__ == "__main__" else None
 if A is not None:
     os.environ["DATAMATE_UPSTREAM"] = str(A.snapshot.resolve())
 from sqlv1 import render as RD, shops as SH, solve as SV, sqlgen as G  # noqa: E402
+from sqlv1.sqlgen import unsafe_status_predicate  # noqa: E402
 from sqlv1.mutation_replay import OUT as MOUT, candidate_id, load_candidates  # noqa: E402
 
 sys.path.append(str(FOXEL / "training"))
@@ -57,15 +58,6 @@ from make_synthetic_fixture import content_hash  # noqa: E402
 import offline_candidates as OC  # noqa: E402
 
 WORK = SH.SYNTH_ROOT / "outputs" / "synth_sql_v1"
-LIT = re.compile(r"(?i)(?:i?like|similar\s+to)\s*'([^']*)'")
-UNSAFE = {"huy", "huỷ", "hủy", "tra", "trả"}
-
-
-def unsafe_status_predicate(sql: str) -> list[str]:
-    """Mẫu LIKE '%<một từ trạng thái>%': khớp cả chuỗi con ('huy' trong 'vận chuyển', 'tra' trong 'kiểm tra', 'trả bằng thẻ')."""
-    return sorted({p for p in LIT.findall(sql) if p.startswith("%") and p.strip("%").strip().lower() in UNSAFE})
-
-
 _CODES = {}
 # rulebook_api.md breaks ties of dates/months by 'earlier first'; the competition rulebook the runtime prompt carries has no such rule
 # (checked locally: no sentence with a tie word and 'sớm'). A trace citing it would teach the model to cite a rule it is not shown.

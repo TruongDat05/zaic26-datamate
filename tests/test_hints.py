@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "eval"))
 from datamate import agent, rules, templates_ext  # noqa: E402
 from datamate.fewshot import FewShot  # noqa: E402
 
+if not (ROOT / "data/public_test/rulebook.md").is_file():
+    pytest.skip("requires local competition public_test data", allow_module_level=True)
 PUB_RB = (ROOT / "data/public_test/rulebook.md").read_text(encoding="utf-8")
 TRAIN = ROOT / "data/train"
 
