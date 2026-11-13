@@ -1,0 +1,53 @@
+# Đường dẫn bộ dữ liệu đang chạy. Khi chấm, predict.sh ghi đè bằng /data.
+data_dir: data/train
+output_dir: outputs
+cache_dir: outputs/cache          # predict.sh ghi đè bằng /tmp (thư mục /data chỉ đọc)
+
+model:
+  name: Qwen/Qwen3-14B            # tên model vLLM phục vụ (--served-model-name); 14,8B tham số (giới hạn BTC ≤ 15B)
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  max_tokens: 3072                # comment dài làm code bị cắt (log holdout B0)
+  enable_thinking: false          # bật bằng --set model.enable_thinking=true, so bằng eval/compare_ab.py; bước JSON luôn tắt
+  max_tokens_thinking: 8192       # thinking chiếm token trước khi tới code
+  request_timeout_s: 600
+  second: null                    # bỏ phiếu hai model, vd {name: Qwen/Qwen3.5-9B, base_url: http://127.0.0.1:8001/v1}; chưa đo, mặc định tắt
+
+agent:
+  votes: 2                        # số lần sinh code, mỗi lần một biến thể prompt (agent.DEFAULT_VARIANTS). Holdout v2.6: phiếu ba gỡ hoà chỉ đúng 50%
+  min_agree: 2                    # cần bao nhiêu lần trùng đáp án mới nộp; còn lại abstain
+  templates: true                 # dạng câu cơ bản trả lời bằng lớp tính toán (templates.py), không gọi model
+  contract: true                  # model gán vai trò cột cho mẫu sổ lạ, code kiểm tra lại (contract.py)
+  plan: false                     # model đọc câu hỏi thành JSON (plan.py). Tập khó A100: 0 câu thêm, 1 câu đúng bị chặn nhầm, nên tắt
+  dual_path: true                 # đáp án đường JSON phải khớp ít nhất một phiếu pandas mới nộp
+  judge: false                    # một lượt soát lại trước khi nộp. Tập khó A100: chặn nhầm 2, chặn đúng 1, nên tắt
+  typed_repair: true              # phân loại lỗi trước khi yêu cầu sửa (repair.py)
+  escalate_paths: []              # đường thêm khi hai phiếu đầu chưa đồng ý: p3, quote, sql, think, m2_a, m2_b (agent.ESCALATE_PATHS); chưa đo, mặc định tắt
+  accept: {min_votes: 3, min_lead: 2}   # đáp án qua đường thêm cần đủ phiếu và dẫn đủ xa; chọn bằng eval/replay_votes.py
+  collect_all: false              # chạy hết mọi đường để eval/replay_votes.py thử ngưỡng
+  template_guard: false           # đáp án lớp tính toán phải qua guard_paths; chưa đo, mặc định tắt
+  consensus_guard: false          # đáp án hai phiếu phải qua guard_paths; chưa đo, mặc định tắt
+  guard_paths: []
+  guard_against: 2                # số phiếu cùng ra một đáp án khác thì bác
+  budget: null                    # {target_s, calls_per_s, base_calls, guard_calls, path_calls}: kế hoạch theo số câu (agent.budget_paths)
+  drop_types: [unanswerable]      # kiểu luôn bỏ trống; holdout v2.6 unanswerable sai 5/5
+  min_agree_by_type: {}           # đặt riêng theo kiểu đáp án, vd {list: 3}; chỉnh theo AcceptedAccuracy trên holdout
+  temperature: 0.0                # greedy để chạy lại ra cùng kết quả (luật 8); đừng tăng
+  seed: 42
+  max_fixes: 2                    # số lần cho LLM sửa khi code lỗi
+  exec_timeout_s: 120             # rộng để code không chập chờn quanh mốc timeout
+  fewshot_k: 4
+  early_stop: true
+  rule_hints: true                # trích các dòng rulebook khớp khái niệm trong câu hỏi, đặt cạnh câu hỏi (rules.py)
+  rule_hints_k: 5
+  code_examples: true             # mỗi lượt thêm một code mẫu đã chấm đúng (cần fewshot.code_bank)
+
+fewshot:                          # ví dụ lấy từ bộ train (đóng vào image)
+  questions: data/train/questions.jsonl
+  answers: data/train/answers.jsonl
+  exclude_businesses_file: eval/holdout_businesses.txt   # doanh nghiệp holdout không làm ví dụ
+  code_bank: data/code_bank.jsonl # tạo bằng eval/build_code_bank.py; chưa có file thì bỏ qua
+
+workers: 16                       # số câu chạy song song (vLLM gộp batch)
+load_workers: 8
+time_budget_s: 19800              # 5.5 giờ; quá giờ thì các câu còn lại abstain (giới hạn BTC 6 giờ)

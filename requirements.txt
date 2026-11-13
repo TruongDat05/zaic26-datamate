@@ -1,0 +1,11 @@
+# Cố định phiên bản thư viện đọc dữ liệu (luật 8: BTC chạy lại phải ra cùng kết quả).
+# pandas 3.x đọc ra dữ liệu KHÁC (kiểu cột str/datetime64[us], ô trống None thay NaN, mô tả bảng cho LLM đổi);
+# Đổi phiên bản ở đây thì dữ liệu nạp (và data/synth_source) có thể khác bản đã chấm.
+pandas==2.2.3           # đúng bản Colab đã chạy ra điểm public 0,395 (logs/run_meta.json của public_v29)
+numpy>=1.26,<2.3        # Colab chạy 2.1.3; để vLLM tự chọn trong khoảng này
+openpyxl==3.1.5
+xlrd==2.0.2
+python-calamine==0.9.0
+pyyaml
+openai>=1.40
+pytest

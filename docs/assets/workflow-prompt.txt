@@ -1,0 +1,30 @@
+Original built-in image_gen prompt. The final README image was subsequently edited by the user to use a light background and serif typography; preserve that edited image.
+
+Use case: infographic-diagram
+Asset type: a polished, readable workflow hero image for the GitHub README of DataMate Synthetic, a Vietnamese synthetic business-data generation repository.
+Primary request: Design an elegant technical workflow infographic with six numbered stages, faithfully illustrating synthetic shops, language-model question/SQL generation, independent local validation, and dataset packaging.
+Composition: wide landscape image approximately 2:1, large readable typography, generous margins. Six clean equal-width cards arranged in a single left-to-right horizontal flow, with thin luminous arrows. A clearly separate compact lower lane connects stage 02 directly to stage 05 for independent deterministic gold; gold must never flow into either model card. Under the cards include a restrained legend and small model-role chips. Make it beautiful as a finished editorial diagram: deep midnight navy background, refined teal/cyan accents, violet for model steps, warm amber for validation, off-white type, subtle grid texture, minimal crisp line icons (documents, database, question bubble, SQL window, shield/check, packaged files), soft controlled depth, no busy decoration.
+Text (verbatim, using English in the image for maximum legibility):
+Title: "DataMate Synthetic"
+Subtitle: "From simulated business worlds to verified training data"
+Stage 01 heading: "LOCAL SOURCE"
+Stage 01 detail: "Mining split · Rules"
+Stage 02 heading: "SYNTHETIC SHOPS"
+Stage 02 detail: "Schema · Events · CSV"
+Stage 03 heading: "QUESTIONS"
+Stage 03 detail: "DeepSeek 4 Flash"
+Stage 03 secondary: "Qwen checks meaning"
+Stage 04 heading: "SQL SOLUTIONS"
+Stage 04 detail: "Qwen 3.8 27B"
+Stage 04 secondary: "Independent solving"
+Stage 05 heading: "VERIFY & AUDIT"
+Stage 05 detail: "Replay · Mutations"
+Stage 05 secondary: "Reject · Repair · Recheck"
+Stage 06 heading: "DATASET PACKAGE"
+Stage 06 detail: "Train · Dev · Final"
+Stage 06 secondary: "SFT · Manifest · Evidence"
+Lower lane label: "Independent local gold"
+Lower lane caption: "Python oracle → expected answers → validation"
+Footer chips: "DeepSeek 4 Flash", "Qwen 3.8 27B", "Gemini · supporting role"
+Footer small principle: "Gold stays local. Only verified samples pass."
+Constraints: Include exactly the six stages 01–06 and all major labels spelled correctly. Only the three model labels above may appear. No provider logos, watermark, mock browser frames, invented numeric results, performance claims, people or photorealistic objects. Keep stage 06 as packaging of source and SFT export evidence, not model training. Image background must be opaque.
