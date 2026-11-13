@@ -4,9 +4,10 @@ import shutil
 from pathlib import Path
 
 import openpyxl
+import pandas as pd
 import pytest
 
-from datamate.ingest import load_business, read_rows
+from datamate.ingest import load_business, read_rows, to_number
 
 FIXTURE = Path(__file__).parent / "fixtures" / "so_ban_hang.xls"  # written with xlwt: two monthly sheets, a title row above the header
 SHEETS = {"T01-2025": [["HD1", datetime.date(2025, 1, 2), "Cà phê sữa", 2, "55k"], [None, None, "Bạc xỉu", 1, 30000]],
@@ -44,3 +45,8 @@ def test_excel_formats_load_the_same(tmp_path, ext):
     rows = db.execute('SELECT "Mã đơn", CAST("Ngày" AS DATE), "Món", "SL", "Thành tiền" FROM so_ban_hang_all ORDER BY 3').fetchall()
     assert rows == [("HD1", datetime.date(2025, 1, 2), "Bạc xỉu", 1, 30000), ("HD1", datetime.date(2025, 1, 2), "Cà phê sữa", 2, 55000),
                     ("HD2", datetime.date(2025, 2, 3), "Trà đào", 1, 35000)]  # title row skipped, '55k' read, order id and date filled down
+
+
+def test_signed_money_shorthand():
+    values = pd.Series(["8tr600", "-8tr600", "-0tr600", "+8tr600", "-25k500", "-8triệu6", "-1,27tr", "-25k", "55.000đ", "1,234,000"], dtype="string")
+    assert to_number(values).tolist() == [8_600_000, -8_600_000, -600_000, 8_600_000, -25_500, -8_600_000, -1_270_000, -25_000, 55_000, 1_234_000]

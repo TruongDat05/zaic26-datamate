@@ -6,7 +6,7 @@
 #   work/shard<i>/    per-GPU working files: the shop layers (views, debt macros) the SQL reads, trace.jsonl, process log
 # One datamate.predict process per GPU (data parallel over shops, no tensor parallelism, so no NCCL traffic between the GPUs).
 # Each process stops itself at TIMEOUT_SECONDS (5 h 50 min), below the 6 h limit that includes model loading.
-set -uo pipefail
+set -euo pipefail
 cd /code
 source ./flags.sh
 DATA="${DATA_DIR:-/data}" OUT="${RESULT_DIR:-/result}"
@@ -15,16 +15,29 @@ T="${TIMEOUT_SECONDS:-21000}"
 mkdir -p "$OUT/logs" "$OUT/work"
 start=$(date +%s)
 echo "datamate: $NG GPU(s), $(grep -c . "$DATA/questions.jsonl") questions, timeout ${T}s"
+pids=()
 for i in $(seq 0 $((NG - 1))); do
   CUDA_VISIBLE_DEVICES=$i timeout --signal=TERM --kill-after=15s "${T}s" \
     python3 -m datamate.predict --data "$DATA" --output "$OUT/work/shard$i" --shard "$i/$NG" --deadline "$(( T - 900 ))" \
     --log-dir "$OUT/logs" --merge-into "$OUT" \
     --model /code/models/Qwen3.5-9B --lora /code/models/lora --fewshot /code/assets/fewshot_bank.jsonl \
     "${DATAMATE_FLAGS[@]}" --engine "$DATAMATE_ENGINE" "$@" > "$OUT/work/shard$i.log" 2>&1 &
+  pids+=("$!")
 done
-wait
+worker_status=0
+for i in "${!pids[@]}"; do
+  if wait "${pids[$i]}"; then
+    echo "datamate: shard$i completed"
+  else
+    rc=$?
+    echo "datamate: shard$i exited with status $rc; see $OUT/work/shard$i.log" >&2
+    # timeout's 124 is the deliberate time guard; preserve and merge saved answers on every worker exit.
+    if (( rc != 124 )); then worker_status=1; fi
+  fi
+done
 python3 -m datamate.submission merge "$OUT" --shards "$OUT/work" --no-copy-logs --questions "$DATA/questions.jsonl"
 python3 -m datamate.submission fill-logs "$OUT/logs" --questions "$DATA/questions.jsonl"
-python3 -m datamate.submission check "$OUT/submission.jsonl" --questions "$DATA/questions.jsonl" || true
+python3 -m datamate.submission check "$OUT/submission.jsonl" --questions "$DATA/questions.jsonl"
 grep -h -E "model ready|loaded [0-9]+ shops|view drafts|debt drafts" "$OUT"/work/shard*.log || true
 echo "datamate: done in $(( $(date +%s) - start ))s, $(ls "$OUT/logs" | wc -l) question logs"
+exit "$worker_status"

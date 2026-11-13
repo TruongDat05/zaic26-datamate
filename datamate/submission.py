@@ -35,8 +35,12 @@ def is_num(v) -> bool:
 
 def problem(row: dict) -> str | None:
     """What is wrong with one submission line, or None."""
+    try:
+        json.dumps(row, allow_nan=False)  # Python otherwise accepts NaN/Infinity, even inside a table
+    except (TypeError, ValueError) as e:
+        return f"not valid JSON ({e})"
     t, a = row.get("type"), row.get("answer")
-    if t not in TYPES:
+    if not isinstance(t, str) or t not in TYPES:
         return f"unknown type {t!r}"
     if t in ("number", "percent") and not is_num(a):
         return f"{t} answer must be a JSON number, got {a!r}"
@@ -68,17 +72,24 @@ def check(submission: Path, questions: Path) -> list[str]:
         except json.JSONDecodeError as e:
             errors.append(f"line {n}: not JSON ({e})")
             continue
+        if not isinstance(row, dict):
+            errors.append(f"line {n}: must be a JSON object")
+            continue
         qid = row.get("id")
+        if not isinstance(qid, str):
+            errors.append(f"line {n}: id must be a string")
+            continue
         seen[qid] += 1
         if qid not in known:
             errors.append(f"line {n}: unknown id {qid!r}")
         if (p := problem(row)):
             errors.append(f"line {n} ({qid}): {p}")
-        types[row.get("type")] += 1
+        types[str(row.get("type"))] += 1
     dups = [q for q, c in seen.items() if c > 1]
     errors += [f"duplicated id {q}" for q in dups]
     missing = [q for q in ids if q not in seen]
-    print(f"{sum(seen.values())} lines, {len(seen)} ids | missing {len(missing)} (scored as abstain) | duplicated {len(dups)}")
+    errors += [f"missing id {q}" for q in missing]
+    print(f"{sum(seen.values())} lines, {len(seen)} ids | missing {len(missing)} | duplicated {len(dups)}")
     print("types:", dict(types.most_common()))
     print(f"answered {sum(c for t, c in types.items() if t != 'abstain')} / {len(ids)} questions")
     return errors

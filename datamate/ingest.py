@@ -89,6 +89,7 @@ def to_number(t):
     if len(m):
         scale = m[1].str.lower().map({"k": 1e3, "tr": 1e6, "triệu": 1e6})
         frac = m[2].fillna("").str.ljust(3, "0").replace("000", "0").astype(float) * scale / 1e3
+        frac = frac.where(~m[0].str.startswith("-"), -frac)  # the sign covers the tail too, including '-0tr600'
         out.loc[m.index] = (m[0].str.replace(",", ".", regex=False).astype(float) * scale + frac.where(m[2].notna(), 0)).round()
     us = clean.str.fullmatch(r"[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?").fillna(False)
     eu = clean.str.fullmatch(r"[+-]?\d{1,3}(?:\.\d{3})+(?:,\d+)?").fillna(False)
