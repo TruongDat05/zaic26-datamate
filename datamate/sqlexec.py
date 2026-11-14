@@ -1,5 +1,6 @@
 """Executing one sample: parse its TYPE line and SQL, run the query read-only with a timeout, turn the result into a typed
 answer, and reject results the rulebook makes implausible (the error goes back to the model in a repair turn)."""
+import json
 import math
 import re
 import threading
@@ -7,7 +8,7 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from .hints import DEBT_WORDS, LIST_WORDS, LOT
-from .ingest import ckey, norm
+from .ingest import DATE_COL, NOT_ORDER_DATE, ORDER_ID, ckey, norm
 
 DEBT_CALL = re.compile(r"debt_(at|new|repaid)\s*\(")
 # A call of a debt table macro where a table goes: FROM / JOIN / a FROM-list comma, then debt_x( ... ). Read on the query
@@ -439,6 +440,111 @@ def shifted_count_error(db, sql):
     return None
 
 
+AGG_CALL = re.compile(r"(?i)\b(?:sum|avg|mean)\s*\(")
+DEDUP = re.compile(r"(?i)\bselect\s+distinct\b|\bqualify\b|\brow_number\s*\(")
+
+
+def same_rows(a, b):
+    """Two results equal up to float rounding (a probe's plan can add the same numbers in another order)."""
+    if len(a) != len(b):
+        return False
+    for ra, rb in zip(a, b):
+        if len(ra) != len(rb):
+            return False
+        for x, y in zip(ra, rb):
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)) and not isinstance(x, bool) and not isinstance(y, bool):
+                if not math.isclose(x, y, rel_tol=1e-9, abs_tol=1e-6):
+                    return False
+            elif x != y:
+                return False
+    return True
+
+
+def with_cte(sql, cte):
+    """The query with one more CTE in front: it shadows a table of the same name for every part of the query."""
+    blank = blank_sql_lines(sql)
+    m = re.match(r"(?is)\s*with\s+(?:recursive\s+)?", blank)
+    return sql[:m.end()] + cte + ", " + sql[m.end():] if m else "WITH " + cte + " " + sql
+
+
+def order_level_error(db, sql, rows):
+    """Repair message for SUM/AVG of an order-level column over its line table (ingest.order_level_tables): such a column holds one
+    value per order repeated on each of its lines, so the sum counts an order once per line, and every sample makes the same mistake
+    (the vote cannot catch it). Checked on the data: the query runs again with the column kept on one line per order, and a different
+    result is the repeat. A query that takes one row per order itself (SELECT DISTINCT, GROUP BY the order id, QUALIFY / row_number)
+    is left alone."""
+    try:
+        info = json.loads(db.execute("SELECT getvariable('dm_order_level')").fetchone()[0] or "{}")
+    except Exception:
+        return None
+    code = blank_sql_lines(sql)
+    if not info or DEDUP.search(code) or calls_debt_macro(sql):  # a macro reads its own tables: no shadow CTE near it
+        return None
+    aggs = [code[m.end():_close(code, m.end() - 1)] for m in AGG_CALL.finditer(code)]
+    for table, x in info.items():
+        if not re.search(r'(?i)(?:\bfrom|\bjoin|,)\s*(?:main\s*\.\s*)?(?:"%s"|%s\b)' % (re.escape(table), re.escape(table)), code):
+            continue
+        groups = [code[m.end():m.end() + (re.search(r"(?i)\b(?:having|order|limit|qualify|window|union)\b|\)", code[m.end():]) or re.search("$", code[m.end():])).start()]
+                  for m in re.finditer(r"(?i)\bgroup\s+by\b", code)]
+        if any(re.search(r'"%s"|(?<![\w"])%s(?![\w"])' % (re.escape(x["id"]), re.escape(x["id"])), g) for g in groups):
+            continue  # one row per order already
+        has = lambda c, a: f'"{c}"' in a or re.search(r'(?<![\w"])%s(?![\w"])' % re.escape(c), a)
+        cols = [c for c in x["cols"] if any(has(c, a) for a in aggs)]
+        if not cols:
+            continue
+        if any(re.match(r"(?i)\s*distinct\b", a) and has(c, a) for a in aggs for c in cols):
+            return (f'SUM/AVG(DISTINCT ...) of an order-level column of "{table}" merges different orders that happen to have the same amount. '
+                    f'Take one row per order instead: FROM "{x["table"]}" (one row per order), or SELECT DISTINCT "{x["id"]}", <column> in a subquery')
+        keep = ", ".join(f'CASE WHEN row_number() OVER (PARTITION BY "{x["id"]}") = 1 THEN "{c}" END AS "{c}"' for c in x["cols"])
+        try:
+            _, once = run_sql(db, with_cte(sql, f'"{table}" AS (SELECT * REPLACE ({keep}) FROM main."{table}")'))
+        except Exception:
+            continue
+        if not same_rows(once, rows):
+            said = ", ".join(f'"{c}"' for c in cols)
+            return (f'{said} of "{table}" is order-level: one value per order ("{x["id"]}"), repeated on every line of the order, so SUM/AVG '
+                    f'over these lines counts each order once per line. Take it once per order: FROM "{x["table"]}" (one row per order, '
+                    f'with the order date, status flags _don_huy/_don_tra and the other order cells), or from SELECT DISTINCT "{x["id"]}", {said}')
+    return None
+
+
+TO_TODAY = re.compile(r"(?:^|_)(?:toi|den|tinh_den|tinh_toi|cho_den)_(?:hom_nay|hnay|nay|bay_gio|hien_tai)(?:_|$)|(?:^|_)(?:hien_tai|hien_gio|bay_gio)(?:_|$)")
+TABLE_REF = re.compile(r'(?i)(?:\bfrom|\bjoin|,)\s*(?:main\s*\.\s*)?("(?:[^"]|"")+"|[^\W\d]\w*)')
+
+
+def future_rows_error(db, sql, rows, question, as_of):
+    """Repair message for a question counted up to today ('tới hôm nay', 'đến nay', 'hiện tại') whose answer includes rows dated after
+    today. The data can run past today; the rulebook says those rows have not happened yet (a book's credit sales were all counted, the
+    ones of next month too, when the filter was on the due date). Checked on the data: the query runs again with every order table it
+    reads (one with an order id, and the canonical views) cut to rows dated up to today; a different result is the future rows."""
+    if not as_of or not TO_TODAY.search(norm(question)) or calls_debt_macro(sql):
+        return None
+    code = blank_sql_lines(sql)
+    have = {t for (t,) in db.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+    shadows = []
+    for ref in dict.fromkeys(TABLE_REF.findall(code)):
+        t = ref[1:-1].replace('""', '"') if ref.startswith('"') else ref
+        if t not in have or t.startswith("_") or t == "calendar":
+            continue
+        cols = db.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? ORDER BY ordinal_position", [t]).fetchall()
+        if not any(re.search(ORDER_ID, ckey(c)) for c, _ in cols) and not t.startswith("v_"):
+            continue
+        day = next((c for c, ty in cols if (ty.upper() == "DATE" or ty.upper().startswith("TIMESTAMP")) and (c == "order_date" or (
+            re.search(DATE_COL, ckey(c)) and not re.search(NOT_ORDER_DATE, ckey(c))))), None)
+        if day and str(db.execute(f'SELECT CAST(max("{day}") AS DATE) FROM "{t}"').fetchone()[0] or "") > as_of:
+            shadows.append(f'"{t}" AS (SELECT * FROM main."{t}" WHERE "{day}" IS NULL OR CAST("{day}" AS DATE) <= DATE \'{as_of}\')')
+    if not shadows:
+        return None
+    try:
+        _, now = run_sql(db, with_cte(sql, ", ".join(shadows)))
+    except Exception:
+        return None
+    if not same_rows(now, rows):
+        return (f"rows dated after today ({as_of}) have not happened yet (rulebook): the question counts up to today, but this query also counts "
+                f"orders placed after {as_of}. Keep only rows whose order date is <= DATE '{as_of}' (a due date or delivery date filter does not do that)")
+    return None
+
+
 def has_debt_layer(db):
     try:
         return bool(db.execute("SELECT count(*) FROM duckdb_functions() WHERE function_name = 'debt_at'").fetchone()[0])
@@ -446,8 +552,9 @@ def has_debt_layer(db):
         return False
 
 
-def execute(db, text, question="", trace=None):
-    """trace (optional dict) receives the SQL as it is run against the database (after the rewrites below), for the run logs."""
+def execute(db, text, question="", trace=None, as_of=None):
+    """trace (optional dict) receives the SQL as it is run against the database (after the rewrites below), for the run logs.
+    as_of: the question's today (the future-rows check)."""
     kind, sql = parse(text)
     if kind not in TYPES:
         raise ValueError(PLACEHOLDER_ERROR if kind is None and placeholder_type(text) else "missing or invalid TYPE line")
@@ -478,6 +585,10 @@ def execute(db, text, question="", trace=None):
         trace["sql"] = sql.rstrip(";")
     names, rows = run_sql(db, sql.rstrip(";"))
     if err := shifted_count_error(db, sql.rstrip(";")):  # before the shape checks: an empty list from this test gets this message
+        raise ValueError(err)
+    if err := order_level_error(db, sql.rstrip(";"), rows):
+        raise ValueError(err)
+    if err := future_rows_error(db, sql.rstrip(";"), rows, question, as_of):
         raise ValueError(err)
     ans = to_answer(kind, names, rows)
     shaped = shape_answer({"type": kind, "answer": ans}, sql)

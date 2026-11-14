@@ -1,11 +1,11 @@
-"""Synthetic-book regressions for shop normalization, base units and sale costs."""
+"""Synthetic-book regressions for shop normalization, canonical views and SQL execution guards."""
 import re
 
 import duckdb
 import pandas as pd
 import pytest
 
-from datamate import ingest, views
+from datamate import ingest, sqlexec, views
 
 
 def classify(text):
@@ -94,10 +94,43 @@ def test_order_level_amounts_get_an_order_table_and_a_note(tmp_path):
     assert db.execute("SELECT count(*) FROM so_ban_don").fetchone()[0] == 40
 
 
+@pytest.mark.parametrize("sql,flagged", [
+    ('SELECT SUM("Khách trả") FROM "so_ban" WHERE NOT "_don_tra"', True),
+    ('WITH x AS (SELECT * FROM so_ban) SELECT ROUND(AVG("Khách trả")) FROM x', True),
+    ('SELECT SUM("Khách trả") / COUNT(DISTINCT "STT") FROM "so_ban"', True),
+    ('SELECT SUM(DISTINCT "Khách trả") FROM "so_ban"', True),
+    ('SELECT SUM("Khách trả") FROM "so_ban_don" WHERE NOT "_don_tra"', False),
+    ('SELECT SUM(k) FROM (SELECT DISTINCT "STT", "Khách trả" AS k FROM "so_ban" WHERE NOT "_don_tra")', False),
+    ('SELECT SUM(k) FROM (SELECT "STT", max("Khách trả") AS k FROM "so_ban" GROUP BY "STT")', False),
+    ('SELECT SUM("Thành tiền") FROM "so_ban" WHERE NOT "_don_tra"', False),
+    ('SELECT COUNT(*) FROM "so_ban" WHERE "Bớt" > 0', False),
+])
+def test_summing_an_order_level_amount_over_lines_is_sent_back(tmp_path, sql, flagged):
+    db, _ = phone_shop(tmp_path)
+    text = f"TYPE: number\n```sql\n{sql}\n```"
+    if flagged:
+        with pytest.raises(ValueError, match="order"):
+            sqlexec.execute(db, text, "tổng tiền khách trả")
+    else:
+        sqlexec.execute(db, text, "tổng tiền khách trả")
+
+
 def test_loan_payments_of_equal_size_are_not_order_level(tmp_path):
     rows = ["STT,Ngày góp,Khách,Đã góp"] + [f"{o},{1 + k}/0{1 + k % 9}/2025,Khách {o},500000" for o in range(1, 41) for k in range(3)]
     db, meta = ingest.load_business(shop(tmp_path, {"so_gop.csv": "\n".join(rows) + "\n"}), "shop")
     assert not any(t.get("order_level") for t in meta["tables"])  # every row is a payment: no line of an order differs in an item
+
+
+def test_rows_after_today_are_sent_back_on_a_to_today_question(tmp_path):
+    rows = ["Mã đơn,Ngày,Hàng,Thành tiền,Ngày phải trả"] + [f"HD{i},{1 + i % 28}/0{1 + i // 28}/2025,Sơn,100000,{1 + i % 28}/0{2 + i // 28}/2025" for i in range(84)]
+    db, _ = ingest.load_business(shop(tmp_path, {"ban_chiu.csv": "\n".join(rows) + "\n"}), "shop")
+    wrong = """TYPE: number\n```sql\nSELECT COUNT(*) FROM "ban_chiu" WHERE "Ngày phải trả" > DATE '2025-02-15'\n```"""
+    right = """TYPE: number\n```sql\nSELECT COUNT(*) FROM "ban_chiu" WHERE "Ngày phải trả" > DATE '2025-02-15' AND "Ngày" <= DATE '2025-02-15'\n```"""
+    q = "Tới hôm nay có mấy đơn bán chịu ghi ngày phải trả sau hôm nay?"
+    with pytest.raises(ValueError, match="after today"):
+        sqlexec.execute(db, wrong, q, as_of="2025-02-15")
+    assert sqlexec.execute(db, right, q, as_of="2025-02-15")["answer"] > 0
+    assert sqlexec.execute(db, wrong, "Có mấy đơn ghi ngày phải trả sau 15/02/2025?", as_of="2025-02-15")  # no 'to today': as written
 
 
 def pharmacy_db():

@@ -234,11 +234,11 @@ class Pipeline:
         """Log one model generation for question i (call order kept for the per-question log)."""
         self._calls[i].append({"kind": kind, "sample": j, "thinking_mode": thinking_mode, "lora": bool(lora and self.a.lora), "text": text})
 
-    def _exec(self, shop, i, j, text, question):
+    def _exec(self, shop, i, j, text, question, as_of=None):
         """Execute sample j of question i and log the SQL as run, its output or its error."""
         tr = {}
         try:
-            p = execute(shop.db, text, question, trace=tr)
+            p = execute(shop.db, text, question, trace=tr, as_of=as_of)
         except Exception as e:
             self._runs[i].append({"sample": j, "sql": tr.get("sql"), "executed": "sql" in tr, "output": None, "error": str(e)[:400]})
             raise
@@ -265,7 +265,7 @@ class Pipeline:
                 texts[i][j] += "\n#REPAIR\n" + out
                 conv[i, j].append({"role": "assistant", "content": out})
                 try:
-                    preds[i][j] = self._exec(shop, i, j, out, todo[i]["question"])
+                    preds[i][j] = self._exec(shop, i, j, out, todo[i]["question"], todo[i].get("as_of_date"))
                 except Exception as e:
                     errs[i][j] += " | " + str(e)[:400]
             turns += len(pairs)
@@ -295,7 +295,7 @@ class Pipeline:
         for i, ts in enumerate(texts):
             for j, t in enumerate(ts):
                 try:
-                    preds[i][j] = self._exec(shop, i, j, t, todo[i]["question"])
+                    preds[i][j] = self._exec(shop, i, j, t, todo[i]["question"], todo[i].get("as_of_date"))
                 except Exception as e:
                     errs[i][j] = str(e)[:400]
                     repair.append((i, j))
@@ -311,7 +311,7 @@ class Pipeline:
                 self._call(i, "type_fill", j, o.outputs[0].text)
                 texts[i][j] = texts[i][j].rstrip() + "\nTYPE:" + o.outputs[0].text
                 try:
-                    preds[i][j], errs[i][j] = self._exec(shop, i, j, texts[i][j], todo[i]["question"]), None
+                    preds[i][j], errs[i][j] = self._exec(shop, i, j, texts[i][j], todo[i]["question"], todo[i].get("as_of_date")), None
                     repair.remove((i, j))
                 except Exception as e:
                     errs[i][j] = str(e)[:400]
@@ -334,7 +334,7 @@ class Pipeline:
                     texts[i].append(t)
                     self._call(i, "thinking_sample", len(texts[i]) - 1, t, thinking_mode=True, lora=a.lora_thinking)
                     try:
-                        preds[i].append(self._exec(shop, i, len(texts[i]) - 1, t, todo[i]["question"])); errs[i].append(None)
+                        preds[i].append(self._exec(shop, i, len(texts[i]) - 1, t, todo[i]["question"], todo[i].get("as_of_date"))); errs[i].append(None)
                     except Exception as e:
                         preds[i].append(None); errs[i].append(str(e)[:400])
                 # failed thinking samples get the same repair turns (non-thinking). A cut-off thought has no query to fix
