@@ -15,7 +15,7 @@ sys.path.insert(0, str(R))
 from datamate import fewshot
 from datamate import values, views
 from datamate import sqlexec, voting  # noqa: E402
-from datamate.hints import period_hints  # noqa: E402
+from datamate.hints import DEBT_WORDS, period_hints  # noqa: E402
 from datamate.scoring import score
 from datamate.ingest import load_business, norm
 
@@ -149,7 +149,8 @@ def main():
             q = Q[i]
             hints = period_hints(t["question"], q["as_of_date"], db)
             sf = [sample_flags(s, t["question"], q["as_of_date"], hints, known, shops[b]["view_offered"]) for s in t["samples"]]
-            idx = voting.debt_pool([s["text"] for s in t["samples"]], a.start)
+            dq = bool(d.get("used")) and bool(DEBT_WORDS.search(norm(t["question"])))  # as the pipeline: narrowed on debt questions only
+            idx = voting.debt_pool([s["text"] for s in t["samples"]], a.start, dq)
             voters = [t["samples"][j] for j in idx]
             ans, conf = voting.vote([s["pred"] for s in voters], len(voters))
             final = t["final"] if t["final"].get("reason") else ans if voting.decide(ans, conf, .5) else {"type": "abstain"}

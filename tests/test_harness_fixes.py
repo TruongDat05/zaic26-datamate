@@ -1,11 +1,12 @@
-"""Synthetic-book regressions for shop normalization, canonical views and SQL execution guards."""
+"""Loader and harness fixes on synthetic books: status words, toppings in the item's cell, staff call names, order-level amounts,
+items in several units, the cost column, rows after today, the debt vote pool and question hints."""
 import re
 
 import duckdb
 import pandas as pd
 import pytest
 
-from datamate import ingest, sqlexec, views
+from datamate import hints, ingest, prompts, sqlexec, views, voting
 
 
 def classify(text):
@@ -30,6 +31,7 @@ def shop(tmp_path, files, readme="Sổ bán hàng."):
     return tmp_path
 
 
+# ---- toppings written in the drink's cell -------------------------------------------------------------------------------------
 def coffee_csv():
     rows = ["Mã đơn,Ngày,Tên sản phẩm,Số lượng,Đơn giá,Thành tiền,Đơn vị"]
     for i in range(40):
@@ -58,6 +60,7 @@ def test_names_with_a_plus_and_no_price_stay():
     assert ingest.split_toppings(df).equals(df)
 
 
+# ---- staff call names --------------------------------------------------------------------------------------------------------
 def test_call_names_map_to_the_staff_list(tmp_path):
     book = "Ngày,Xe,Thợ,Tiền\n" + "".join(f"0{1 + i % 9}/07/2025,Wave {i},{t},100000\n"
                                             for i, t in enumerate(["Phúc", "a Phúc", "A.Phúc", "a Đức", "Đức", "A.Đức", "An"] * 5))
@@ -69,6 +72,7 @@ def test_call_names_map_to_the_staff_list(tmp_path):
     assert customers == {"anh Minh": "Minh"}  # no roster: only the form of address goes; the given name 'Anh Thư' stays
 
 
+# ---- order-level amounts -----------------------------------------------------------------------------------------------------
 def phone_csv():
     """Order cells (customer, discount, paid) on the first line of an order only, as a hand-kept book writes them."""
     rows = ["Ngày,STT,Khách,Hàng,SL,Giá,Thành tiền,Bớt,Khách trả,Ghi chú"]
@@ -121,6 +125,7 @@ def test_loan_payments_of_equal_size_are_not_order_level(tmp_path):
     assert not any(t.get("order_level") for t in meta["tables"])  # every row is a payment: no line of an order differs in an item
 
 
+# ---- rows dated after today --------------------------------------------------------------------------------------------------
 def test_rows_after_today_are_sent_back_on_a_to_today_question(tmp_path):
     rows = ["Mã đơn,Ngày,Hàng,Thành tiền,Ngày phải trả"] + [f"HD{i},{1 + i % 28}/0{1 + i // 28}/2025,Sơn,100000,{1 + i % 28}/0{2 + i // 28}/2025" for i in range(84)]
     db, _ = ingest.load_business(shop(tmp_path, {"ban_chiu.csv": "\n".join(rows) + "\n"}), "shop")
@@ -133,6 +138,7 @@ def test_rows_after_today_are_sent_back_on_a_to_today_question(tmp_path):
     assert sqlexec.execute(db, wrong, "Có mấy đơn ghi ngày phải trả sau 15/02/2025?", as_of="2025-02-15")  # no 'to today': as written
 
 
+# ---- views: one unit per item, factors through, the cost column ---------------------------------------------------------------
 def pharmacy_db():
     db = duckdb.connect()
     db.execute('CREATE TABLE quy_doi ("Tên sản phẩm" VARCHAR, "Đơn vị quy đổi" VARCHAR, "Tỉ lệ quy đổi" DOUBLE, '
@@ -207,3 +213,30 @@ def test_describe_names_the_unit_filter_and_groups():
     text = views.describe(db, mapping(), 8, 8)
     assert "WHERE unit = '<unit>'" in text and "'chai', 'viên'" in text
     assert "never inferred from other columns" in text  # product_group is always NULL here
+
+
+# ---- vote pool and question hints --------------------------------------------------------------------------------------------
+def test_a_question_without_a_debt_word_is_never_narrowed_to_macro_samples():
+    macro = "TYPE: number\n```sql\nSELECT SUM(paid) FROM debt_repaid(DATE '2025-06-01', DATE '2025-07-01')\n```"
+    raw = "TYPE: number\n```sql\nSELECT SUM(amount) - SUM(cost) FROM v_sales\n```"
+    assert voting.debt_pool([raw, raw, macro, macro, macro], 2, debt_q=False) == [0, 1, 2, 3, 4]
+    assert voting.debt_pool([raw, raw, macro, macro, macro], 2, debt_q=True) == [2, 3, 4]
+
+
+def test_subjective_questions_get_the_unanswerable_hint():
+    rb = "Khách sộp nhất: giá trị trung bình một đơn cao nhất. Nhân viên, thợ chăm chỉ nhất: nhiều ngày làm việc nhất."
+    assert hints.subjective_hint("Khách thân thiện nhất tháng 12/2025 là ai?", rb)
+    assert hints.subjective_hint("nha cung cap uy tin cua tiem la ai", rb)
+    assert not hints.subjective_hint("Thợ chăm chỉ nhất tháng 3 là ai?", rb)
+    assert not hints.subjective_hint("Tồn kho tính đến hôm nay còn bao nhiêu?", rb)  # 'kho tinh' is no 'khó tính'
+    assert not hints.subjective_hint("Nhà cung cấp uy tín nhất theo số phiếu nhập là ai?", rb)  # the question gives its measure
+    assert hints.subjective_hint("Món nào ngon nhất tháng 11?", rb)
+    assert not hints.subjective_hint("Giá một chai Siro ăn ngon Ích Nhi hôm nay?", rb)  # 'ngon' in an item name, no 'nhất'
+    hit = ['"san_pham"."Tên" = \'Kẹo dẻo dễ thương\'']
+    assert not hints.subjective_hint("Tháng 3 bán bao nhiêu gói Kẹo dẻo dễ thương?", rb, hit)  # the item's own name
+    assert not hints.subjective_hint("Khách thân thiện nhất là ai?", rb + " Khách thân thiện: nhiều đơn nhất.")  # defined: answerable
+
+
+def test_order_slang_is_glossed():
+    q = {"question": "Tuần trước tổng bnhiu đh z?", "as_of_date": "2025-09-26", "_hits": []}
+    assert "đh = đơn hàng" in prompts.chat("S", "CTX", q)[1]["content"]

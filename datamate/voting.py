@@ -36,14 +36,15 @@ def answer_key(p):
 
 
 def debt_pool(texts, start, debt_q=False):
-    """Indices of the samples that vote. When the question asks about debts and the shop has the debt layer (`debt_q`), or most thinking
-    samples (from `start`) call a debt macro, only the samples calling one do: plain samples of a LoRA that never saw the macros answer
-    debt questions from raw tables (one holdout shop: the macros give the gold answer on all 8 lost debt questions, the raw majority on none).
+    """Indices of the samples that vote. When the question asks about debts and the shop has the debt layer (`debt_q`: the question
+    matches hints.DEBT_WORDS), only the samples calling a debt macro do: plain samples of a LoRA that never saw the macros answer debt
+    questions from raw tables (one holdout shop: the macros give the gold answer on all 8 lost debt questions, the raw majority on none).
+    A question without a debt word is never narrowed, however many thinking samples (from `start`) reach for a macro: 'lai gop' (gross
+    profit) read as an installment ('góp') sent every thinking sample to debt_repaid, and the narrowed vote answered with it.
     Only the executed query counts: a thought that names a macro and then reads raw tables is a raw sample, and so is a query naming
     a macro only in a comment, a CTE or an alias (sqlexec.calls_debt_macro)."""
     uses = [calls_debt_macro(parse(t.split("\n#REPAIR\n")[-1])[1]) for t in texts]
-    think = uses[start:]
-    if (debt_q and any(uses)) or (think and sum(think) / len(think) >= .5):
+    if debt_q and any(uses):
         return [j for j, u in enumerate(uses) if u]
     return list(range(len(texts)))
 

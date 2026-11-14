@@ -223,7 +223,7 @@ class Pipeline:
         a, bank = self.a, self.bank
         for q in todo:
             q["_hits"] = entity_hits(shop.db, shop.shown, q["question"])
-            q["_periods"] = question_hints(q["question"], q["as_of_date"], shop.db, shop.shown)
+            q["_periods"] = question_hints(q["question"], q["as_of_date"], shop.db, shop.shown, self.rulebook, q["_hits"])
             q["_oor"] = outside(q["_periods"], data_span(shop.meta))
         # examples read the canonical views, so a shop without them gets none
         return [[chat(s, shop.ctx, q, fewshot.block(bank.retrieve(q["question"], shop.name, a.fewshot_k, debt=bool(shop.debt))) if bank and shop.view and j == 1 else "")

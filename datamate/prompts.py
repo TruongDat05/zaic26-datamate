@@ -53,7 +53,8 @@ SLANG = {"hqua": "hôm qua", "hnay": "hôm nay", "hnao": "hôm nào", "bqua": "b
          "ko": "không", "k": "không", "dc": "được", "đc": "được", "tg": "thời gian", "nv": "nhân viên", "ncc": "nhà cung cấp",
          "th": "tháng", "thg": "tháng", "z": "vậy", "mik": "mình", "mk": "mình", "j": "gì",
          "gồi": "rồi", "rùi": "rồi", "hok": "không", "hem": "không", "nhìu": "nhiều", "bít": "biết", "lun": "luôn", "jup": "giúp", "dzậy": "vậy", "zậy": "vậy",
-         "ni": "này", "mô": "nào", "wan": "quán"}  # central / chat forms seen in public questions, absent from train
+         "ni": "này", "mô": "nào", "wan": "quán",  # central / chat forms seen in public questions, absent from train
+         "đh": "đơn hàng", "dh": "đơn hàng"}  # 'tổng số đh' was answered with revenue
 MONEY = re.compile(r"\b(\d+(?:[.,]\d)?)\s*(tr|triệu|trieu|củ|k)(\d?)\b", re.I)
 
 

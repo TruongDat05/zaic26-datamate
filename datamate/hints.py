@@ -130,7 +130,8 @@ def grain_hints(question):
     if PROFIT.search(t):  # public samples wrote SUM(cost) * SUM(qty) or subtracted the sales amount twice
         out.append("PROFIT (rulebook): gross profit = revenue of valid sale lines - SUM(quantity in the SALE unit * cost recorded on the sale line), line by line: "
                    "that cost is per sale unit (the unit of the unit price), so never multiply it by a base-unit quantity (qty of v_sales, 'SL cơ bản'); "
-                   "net profit / lời thật of a month = its gross profit - SUM of every expense row dated in that month.")
+                   "net profit / lời thật of a month = its gross profit - SUM of every expense row dated in that month. "
+                   "Lãi gộp (lai gop) is this profit of sales, not a debt, a repayment or an installment (góp): no debt macro.")
     if TRIPS.search(t):
         out.append("DELIVERY TRIPS (rulebook): each trip (đợt, 'Lượt giao') of each order counts once: COUNT(DISTINCT (order id, trip number)) over the delivery log rows dated in the period. The log has one row per item per trip, so not COUNT(*), and not COUNT(DISTINCT trip number).")
     return out
@@ -158,6 +159,30 @@ def outside(periods, span):
 DEBT_WORDS = re.compile(r"(?:^|_)(?:no|nowj|cong_no|mua_chiu|ghi_no)(?:_|$)")  # nợ (also its telex typo), công nợ, mua chịu, ghi nợ, on norm(question)
 
 
-def question_hints(question, as_of, db, meta):
+# Judgements no column records (rulebook §7: unanswerable unless the rulebook defines how to rank them, as it does 'khách sộp',
+# 'thợ chăm chỉ'). (accented form, its unaccented form when that reads only one way: 'kho tinh' is also 'tồn kho tính đến')
+SUBJECTIVE = [("thân thiện", "than thien"), ("uy tín", "uy tin"), ("đáng tin", None), ("tin cậy", "tin cay"), ("nhiệt tình", "nhiet tinh"),
+              ("ngon nhất", "ngon nhat"), ("trung thực", "trung thuc"), ("khó tính", None), ("dễ tính", None), ("chất lượng tốt", "chat luong tot"),
+              ("chất lượng nhất", None), ("chất lượng cao", None), ("lành nghề", "lanh nghe"), ("tận tâm", "tan tam"), ("tận tình", None),
+              ("lễ phép", "le phep"), ("vui vẻ", "vui ve"), ("dễ thương", "de thuong"), ("chu đáo", "chu dao"), ("tốt bụng", "tot bung"),
+              ("có tâm", None), ("đẹp nhất", "dep nhat"), ("hài lòng", None), ("khéo tay", "kheo tay"), ("tử tế", None), ("đáng yêu", "dang yeu")]
+
+
+def subjective_hint(question, rulebook, hits=()):
+    """A judgement the rulebook does not define and no column records ('khách thân thiện nhất', 'nhà cung cấp uy tín'): samples ranked
+    by some stand-in (most orders, most money) and answered; the rulebook makes such a question unanswerable. A word inside a value
+    the question names (hits: VALUES MATCHING THE QUESTION, e.g. the item 'Siro ăn ngon ...') is that name, not a judgement."""
+    words = lambda x: " " + " ".join(re.findall(r"\w+", x.lower())) + " "
+    q, rb, named = words(question), words(rulebook), words(" ".join(hits))
+    if re.search(r" (?:theo|dựa|dua|tính bằng|tinh bang) ", q):  # the question gives its own measure: rulebook, 'câu hỏi nói khác thì làm theo câu hỏi'
+        return []
+    for acc, plain in SUBJECTIVE:
+        if (f" {acc} " in q or (plain and f" {plain} " in q)) and f" {acc} " not in rb and f" {acc} " not in named and not (plain and f" {plain} " in named):
+            return [f"SUBJECTIVE: '{acc}' is a judgement that the rulebook does not define and no column records, so the question is unanswerable "
+                    "(rulebook §7): TYPE: unanswerable with SELECT 1. Do not stand in another measure (most orders, most money, most days)."]
+    return []
+
+
+def question_hints(question, as_of, db, meta, rulebook="", hits=()):
     """Every hint line placed after the date anchors of one question."""
-    return period_hints(question, as_of, db) + grain_hints(question) + lot_hint(question, meta)
+    return period_hints(question, as_of, db) + grain_hints(question) + lot_hint(question, meta) + subjective_hint(question, rulebook, hits)
