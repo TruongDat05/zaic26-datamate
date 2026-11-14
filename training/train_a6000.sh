@@ -63,8 +63,7 @@ elif [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
   echo "skipped: SKIP_PREFLIGHT=1"
 else
   rm -rf "${OUT}_preflight"
-  # the 2 longest rows of the whole data (--limit-rows 0 undoes an EXTRA_ARGS limit): here thinking rows whose replies also fill the
-  # LM head's --ce-chunk, so both peaks are measured
+  # Largest total sequence, then largest reply (--limit-rows 0 undoes an EXTRA_ARGS limit): check both activation and LM-head peaks.
   "$PY" training/train_lora_bf16.py --train "$DATA/train.jsonl" --model "$MODEL" "${ARGS[@]}" --grad-accum 1 --max-steps 2 --longest-first \
       --limit-rows 0 --out "${OUT}_preflight" --report-to none
   "$PY" - "${OUT}_preflight/run_manifest.json" <<'EOF'

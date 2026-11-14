@@ -220,6 +220,16 @@ def quantile(xs, q):
     return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else 0
 
 
+def preflight_order(examples):
+    """Put the largest sequence and largest reply first without duplicates; keep the remaining rows by total length."""
+    rows = sorted(examples, key=lambda e: -len(e["input_ids"]))
+    if len(rows) > 1:
+        i = max(range(len(rows)), key=lambda j: len(rows[j]["input_ids"]) - rows[j]["n_prompt"])
+        if i:
+            rows.insert(1, rows.pop(i))
+    return rows
+
+
 def length_report(lengths, examples, rejected):
     tok = [x["tokens"] for x in lengths]
     lab = sum(len(e["input_ids"]) - e["n_prompt"] for e in examples)
@@ -451,7 +461,7 @@ def make_trainer(a, model, tok, train_ex, dev_ex, world, log, head=None):
             return (loss, out) if return_outputs else loss
 
         def _get_train_sampler(self, train_dataset=None):
-            if a.longest_first and world == 1:  # memory check: the longest rows first, in order
+            if a.longest_first and world == 1:  # memory check: preserve preflight_order
                 return torch.utils.data.SequentialSampler(train_dataset or self.train_dataset)
             return super()._get_train_sampler(train_dataset)
 
@@ -519,7 +529,7 @@ def main(argv=None):
     ap.add_argument("--attn", default="sdpa", help="attention of the 8 full-attention layers: sdpa or flash_attention_2")
     ap.add_argument("--limit-rows", type=int, help="train on N rows drawn at random (a short run to learn or check the setup)")
     ap.add_argument("--max-steps", type=int, default=-1, help="stop after N optimizer steps (memory / speed check)")
-    ap.add_argument("--longest-first", action="store_true", help="the longest rows first (with --max-steps: peak memory at --max-len)")
+    ap.add_argument("--longest-first", action="store_true", help="memory preflight: largest total sequence, then largest reply, then other rows by length")
     ap.add_argument("--logging-steps", type=int, default=1)
     ap.add_argument("--eval-steps", type=int, default=50)
     ap.add_argument("--dev-max-rows", type=int, default=0, help="dev loss on a fixed random subset of N dev rows (same seed, same rows at every "
@@ -578,6 +588,8 @@ def main(argv=None):
         log(f"{m['file']}: matches sft_manifest.json ({m['split']}, {m['rows']} rows, build {str(m['build_id'])[:19]})")
     if not train_ex:
         raise SystemExit(f"no train row passes the checks at --max-len {a.max_len}: see {a.out / 'rejected_rows.jsonl'}")
+    if a.dev and not dev_ex:
+        raise SystemExit(f"no dev row passes the checks at --max-len {a.max_len}: see {a.out / 'rejected_rows.jsonl'}; dev evaluation cannot be disabled silently")
     if a.validate_only:
         log(f"validate-only: data_report.json and rejected_rows.jsonl in {a.out}")
         return report
@@ -590,7 +602,9 @@ def main(argv=None):
     if a.limit_rows:
         train_ex = train_ex[:a.limit_rows]
     if a.longest_first:
-        train_ex.sort(key=lambda e: -len(e["input_ids"]))
+        train_ex = preflight_order(train_ex)
+        for e in train_ex[:2]:
+            log(f"preflight row {e['id']}: {len(e['input_ids'])} total tokens, {len(e['input_ids']) - e['n_prompt']} reply tokens")
 
     import torch
     if torch.cuda.is_available():

@@ -68,6 +68,27 @@ def test_prepare_masks_prompt_and_rejects_long_and_duplicate_rows():
     assert rep["rows_kept"] == 1 and 0 < rep["label_share"] < 1 and rep["share_kept_at_max_len"][8192] == 1.0
 
 
+def test_preflight_covers_total_length_and_reply_length_without_duplicates():
+    ex = [{"id": "middle", "input_ids": [0] * 80, "n_prompt": 75},
+          {"id": "context", "input_ids": [0] * 100, "n_prompt": 95},
+          {"id": "reply", "input_ids": [0] * 70, "n_prompt": 10}]
+    assert [e["id"] for e in T.preflight_order(ex)] == ["context", "reply", "middle"]
+    ex[1]["n_prompt"] = 0
+    assert [e["id"] for e in T.preflight_order(ex)] == ["context", "middle", "reply"]
+    assert T.preflight_order([]) == [] and T.preflight_order(ex[:1]) == ex[:1]
+
+
+@pytest.mark.parametrize("dev_rows", [[], [row(2, reply="no sql")]])
+def test_requested_dev_must_have_a_valid_row_even_in_validate_only(tmp_path, monkeypatch, dev_rows):
+    monkeypatch.setattr(T, "load_tokenizer", lambda _: FakeTok())
+    train = write_jsonl(tmp_path / "train.jsonl", [row(1)])
+    dev = write_jsonl(tmp_path / "dev.jsonl", dev_rows)
+    with pytest.raises(SystemExit, match="no dev row passes"):
+        T.main(["--train", str(train), "--dev", str(dev), "--model", "unused", "--out", str(tmp_path / "check"), "--validate-only"])
+    report = json.loads((tmp_path / "check/data_report.json").read_text())
+    assert report["train"]["rows_kept"] == 1 and report["dev"]["rows_kept"] == 0
+
+
 def exporter_row(i, shop="syn_shop_0001", thinking=False, **kw):
     """A row as the SFT exporter writes it (data/data/train.jsonl)."""
     sql = "```sql\nSELECT COUNT(*) FROM v_orders\n```"
