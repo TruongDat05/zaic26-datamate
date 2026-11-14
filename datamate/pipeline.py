@@ -152,7 +152,11 @@ class Pipeline:
             sql, nv, verr = vfixed[b]["sql"], vfixed[b]["agree"], vfixed[b]["errors"]
             vtexts[b] = vfixed[b]["drafts"]
             if sql:
-                views.build(db, sql)
+                try:
+                    views.build(db, sql)
+                except Exception as e:  # a saved mapping can name a column a newer loader no longer makes (e.g. "_tra"): no view, no crash
+                    print(f"[views] {b}: reused view rejected: {str(e)[:200]}", flush=True)
+                    sql, nv = None, 0
         elif b in vtexts:
             sql, nv = views.pick(db, vchecked[b])
             verr = [e for fp, e in vchecked[b] if fp is None]
@@ -162,6 +166,18 @@ class Pipeline:
                     sql, nv = soft, sn
                 elif sql:
                     views.build(db, sql)
+            if sql and (multi := views.multi_unit_items(db, "v_sales_all")) and (fixed := views.qty_by_table(db, sql)):
+                # items in several units: qty kept the line's own unit. Factors from the shop's conversion table, multiplied through
+                try:
+                    views.build(db, fixed)
+                    left = views.multi_unit_items(db, "v_sales_all")
+                except Exception as e:
+                    left = multi + [str(e)[:200]]
+                if len(left) < len(multi):
+                    sql = fixed
+                else:
+                    views.build(db, sql)
+                print(f"[views] {b}: {len(multi)} items in several units, conversion table -> {len(left)} left, kept={sql == fixed}", flush=True)
             if sql and len(bad := views.mixed_price_items(db, "v_sales")) >= 2:  # qty is still not in one base unit
                 fixed = views.qty_by_price(sql)
                 views.build(db, fixed)

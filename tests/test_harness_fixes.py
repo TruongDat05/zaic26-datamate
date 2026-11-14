@@ -1,7 +1,9 @@
-"""Synthetic-book regressions for shop normalization and order-level tables."""
+"""Synthetic-book regressions for shop normalization, base units and sale costs."""
 import re
 
+import duckdb
 import pandas as pd
+import pytest
 
 from datamate import ingest, views
 
@@ -96,3 +98,79 @@ def test_loan_payments_of_equal_size_are_not_order_level(tmp_path):
     rows = ["STT,Ngày góp,Khách,Đã góp"] + [f"{o},{1 + k}/0{1 + k % 9}/2025,Khách {o},500000" for o in range(1, 41) for k in range(3)]
     db, meta = ingest.load_business(shop(tmp_path, {"so_gop.csv": "\n".join(rows) + "\n"}), "shop")
     assert not any(t.get("order_level") for t in meta["tables"])  # every row is a payment: no line of an order differs in an item
+
+
+def pharmacy_db():
+    db = duckdb.connect()
+    db.execute('CREATE TABLE quy_doi ("Tên sản phẩm" VARCHAR, "Đơn vị quy đổi" VARCHAR, "Tỉ lệ quy đổi" DOUBLE, '
+               '"Tỉ lệ quy đổi (đơn vị ghi kèm)" VARCHAR, "Đơn vị cơ bản" VARCHAR)')
+    db.execute("INSERT INTO quy_doi VALUES ('Thuốc A', 'vỉ', 4, NULL, 'viên'), ('Thuốc A', 'hộp', 25, 'vỉ', 'viên'), ('Siro B', 'thùng', 24, NULL, 'chai')")
+    db.execute('CREATE TABLE ban ("Mã đơn" VARCHAR, "Ngày" DATE, "Tên" VARCHAR, "SL" DOUBLE, "ĐVT" VARCHAR, "Tiền" DOUBLE, "Giá vốn" DOUBLE)')
+    lines = [("viên", 1, 1200, 900), ("vỉ", 1, 4800, 3600), ("hộp", 1, 130000, 90000)]
+    k = 0
+    for i in range(30):
+        for u, q, money, cost in lines:
+            db.execute("INSERT INTO ban VALUES (?, DATE '2025-03-01' + ?, 'Thuốc A', ?, ?, ?, ?)", [f"O{k}", i, q, u, money, cost])
+            k += 1
+        for u, q, money, cost in (("chai", 2, 40000, 30000), ("thùng", 1, 450000, 340000)):
+            db.execute("INSERT INTO ban VALUES (?, DATE '2025-03-01' + ?, 'Siro B', ?, ?, ?, ?)", [f"O{k}", i, q, u, money, cost])
+            k += 1
+    return db
+
+
+def mapping(cost=True):
+    return ('SELECT "Mã đơn" AS order_id, "Ngày" AS order_date, NULL AS order_ts, NULL AS product_code, NULL AS product_group, "Tên" AS product_name, '
+            '"SL" AS qty, "ĐVT" AS unit, "Tiền" AS amount, ' + ('"SL" * "Giá vốn" AS cost, ' if cost else "")
+            + "NULL AS customer_id, NULL AS customer_name, NULL AS staff, NULL AS channel, NULL AS payment, false AS is_cancelled, "
+            "false AS is_returned, 'item' AS line_kind FROM ban")
+
+
+def test_items_in_several_units_fail_the_draft_and_convert_through_the_table():
+    db = pharmacy_db()
+    views.build(db, mapping(), "_cand_")
+    with pytest.raises(ValueError, match="BASE unit"):
+        views.unit_test(db, "_cand_")
+    fixed = views.qty_by_table(db, mapping())
+    views.build(db, fixed)
+    assert views.multi_unit_items(db, "v_sales_all") == []
+    got = dict(db.execute("SELECT product_name || '/' || unit, sum(qty) FROM v_sales GROUP BY 1").fetchall())
+    assert got == {"Thuốc A/viên": 30 * (1 + 4 + 100), "Siro B/chai": 30 * (2 + 24)}  # hộp = 25 vỉ x 4 viên
+    views.unit_test(db, "v_")
+
+
+def test_a_converted_line_is_not_converted_again():
+    db = pharmacy_db()
+    db.execute("""UPDATE ban SET "SL" = "SL" * 100, "ĐVT" = 'hộp' WHERE "ĐVT" = 'hộp'""")  # qty already in viên, unit still the line's
+    views.build(db, views.qty_by_table(db, mapping()))
+    assert db.execute("SELECT sum(qty) FROM v_sales WHERE product_name = 'Thuốc A'").fetchone()[0] == 30 * 105
+
+
+def test_a_small_factor_is_not_applied_twice():
+    db = pharmacy_db()
+    db.execute("""UPDATE quy_doi SET "Tỉ lệ quy đổi" = 2 WHERE "Đơn vị quy đổi" = 'thùng'""")  # a pack of 2 bottles
+    db.execute("""UPDATE ban SET "Tiền" = 40000 WHERE "ĐVT" = 'thùng'""")  # priced as two bottles (20000 each)
+    views.build(db, views.qty_by_table(db, mapping()))
+    assert db.execute("SELECT sum(qty) FROM v_sales WHERE product_name = 'Siro B'").fetchone()[0] == 30 * (2 + 2)  # 1 pack -> 2 bottles
+    db.execute("""UPDATE ban SET "SL" = 2 WHERE "ĐVT" = 'thùng'""")  # a draft that already wrote the pack in bottles
+    views.build(db, views.qty_by_table(db, mapping()))
+    assert db.execute("SELECT sum(qty) FROM v_sales WHERE product_name = 'Siro B'").fetchone()[0] == 30 * (2 + 2)  # not 2 x 2
+
+
+def test_cost_column_and_old_mappings_without_it():
+    db = pharmacy_db()
+    views.build(db, mapping(cost=False))  # a mapping saved before the cost column still builds
+    assert db.execute("SELECT count(cost) FROM v_sales").fetchone()[0] == 0
+    views.build(db, mapping())
+    assert "Gross profit (lãi gộp) = SUM(amount) - SUM(cost)" in views.describe(db, mapping(), 8, 8)
+    bad = mapping().replace('"SL" * "Giá vốn" AS cost', '"SL" * "Giá vốn" * 100 AS cost')
+    views.build(db, bad, "_cand_")
+    with pytest.raises(ValueError, match="SALE unit"):
+        views.cost_test(db, "_cand_")
+
+
+def test_describe_names_the_unit_filter_and_groups():
+    db = pharmacy_db()
+    views.build(db, views.qty_by_table(db, mapping()))
+    text = views.describe(db, mapping(), 8, 8)
+    assert "WHERE unit = '<unit>'" in text and "'chai', 'viên'" in text
+    assert "never inferred from other columns" in text  # product_group is always NULL here

@@ -22,6 +22,7 @@ Write ONE read-only DuckDB SELECT (WITH allowed) returning one row per sold line
   qty           quantity sold on the line in the item's BASE UNIT (đơn vị cơ bản): a column already holding the converted quantity if the line table has one, otherwise the recorded quantity times the factor for the line's unit from the conversion table, catalog or README; an item with one unit keeps the recorded quantity
   unit          base unit of qty, NULL if none
   amount        line revenue in VND after line-level discounts, before order-level vouchers, without VAT/shipping
+  cost          cost of goods of the line in VND: the quantity in the line's own sale unit (the unit of its unit price) x the unit cost written on the sale line (giá vốn), or the line's own cost total; NULL when the sale lines record no cost (never rebuilt from imports or lots)
   customer_id   customer code / member card id when the shop records one (mã khách, mã thẻ ...), NULL otherwise and for walk-ins
   customer_name customer name; NULL for walk-in customers (khách lẻ, kl, lẻ, vãng lai, blank), matched in any case/spacing: lower(trim(x)) IN ('khách lẻ', ...)
   staff, channel, payment   NULL when the shop does not record them
@@ -33,7 +34,7 @@ Think briefly, then answer with the SQL in one ```sql``` block."""
 
 COLS = """CAST(order_id AS VARCHAR) AS order_id, CAST(order_date AS DATE) AS order_date, CAST(order_ts AS TIMESTAMP) AS order_ts,
   CAST(product_code AS VARCHAR) AS product_code, CAST(product_group AS VARCHAR) AS product_group, trim(regexp_replace(CAST(product_name AS VARCHAR), '\\s+', ' ', 'g')) AS product_name, CAST(qty AS DOUBLE) AS qty,
-  CAST(unit AS VARCHAR) AS unit, CAST(amount AS DOUBLE) AS amount, nullif(trim(CAST(customer_id AS VARCHAR)), '') AS customer_id, nullif(trim(CAST(customer_name AS VARCHAR)), '') AS customer_name,
+  CAST(unit AS VARCHAR) AS unit, CAST(amount AS DOUBLE) AS amount, CAST(cost AS DOUBLE) AS cost, nullif(trim(CAST(customer_id AS VARCHAR)), '') AS customer_id, nullif(trim(CAST(customer_name AS VARCHAR)), '') AS customer_name,
   CAST(staff AS VARCHAR) AS staff, CAST(channel AS VARCHAR) AS channel, CAST(payment AS VARCHAR) AS payment,
   coalesce(CAST(is_cancelled AS BOOLEAN), false) AS line_cancelled, coalesce(CAST(is_returned AS BOOLEAN), false) AS line_returned,
   lower(trim(CAST(line_kind AS VARCHAR))) AS line_kind"""
@@ -80,8 +81,11 @@ def parse_select(text):
 
 def build(db, sql, prefix="v_"):
     """Materialize the four tables from the model's SELECT. Return a fingerprint, raise if unusable."""
+    cols = COLS
+    if "cost" not in {d[0].lower() for d in db.execute(f"SELECT * FROM ({sql}) LIMIT 0").description}:
+        cols = COLS.replace("CAST(cost AS DOUBLE) AS cost", "CAST(NULL AS DOUBLE) AS cost")  # a mapping saved before the cost column
     db.execute(f"""CREATE OR REPLACE TABLE {prefix}sales_all AS
-        WITH src AS ({sql}), t0 AS (SELECT {COLS} FROM src),
+        WITH src AS ({sql}), t0 AS (SELECT {cols} FROM src),
         -- rulebook: one customer = one customer code, else one name up to spelling (case, accents, spaces, punctuation)
         t1 AS (SELECT * REPLACE (coalesce(customer_id, nullif(regexp_replace(replace(strip_accents(lower(customer_name)), 'đ', 'd'), '[^a-z0-9]', '', 'g'), '')) AS customer_id) FROM t0),
         t AS (SELECT * EXCLUDE (customer_id, customer_name), customer_id AS customer_key,
@@ -299,6 +303,111 @@ def discount_test(db, prefix, sql):
                                  f'"{p}" x "{q}" minus "{b}": it is the line amount after that discount. Use "{a}" as amount; taking "{b}" off again counts the discount twice')
 
 
+def cost_test(db, prefix):
+    """Drafting only: a line's cost is per SALE unit times the sale-unit quantity. Cost above twice the line amount on many lines means
+    it was multiplied by the base-unit qty (or summed over lots), so every gross-profit question would come out negative."""
+    n, over = db.execute(f"""SELECT count(*), count(*) FILTER (WHERE cost > 2 * amount) FROM {prefix}sales_all
+        WHERE line_kind = 'item' AND cost > 0 AND amount > 0""").fetchone()
+    if n >= 20 and over > 0.05 * n:
+        raise ValueError(f"cost is over twice the line amount on {over} of {n} item lines: cost = the quantity in the line's SALE unit (the unit of its "
+                         "unit price) x the cost per sale unit written on the line, not the base-unit qty x that cost")
+
+
+def multi_unit_items(db, table):
+    """[(item, its units)] for items whose item lines carry 2+ units (each on 3+ lines). qty is in the item's base unit and unit is that
+    base unit, so an item has one unit; several mean qty kept each line's own unit (a box, a strip and a tablet summed as one unit;
+    factors read from the prices are off by the bulk discount, the conversion table's are exact)."""
+    return db.execute(f"""SELECT p, list(u ORDER BY u) FROM (SELECT product_name p, lower(trim(unit)) u FROM {table}
+        WHERE line_kind = 'item' AND product_name IS NOT NULL AND unit IS NOT NULL GROUP BY 1, 2 HAVING count(*) >= 3)
+        GROUP BY p HAVING count(*) >= 2 ORDER BY count(*) DESC, p""").fetchall()
+
+
+def unit_test(db, prefix):
+    """Drafting only: qty must be in each item's base unit, with unit = that base unit (one unit per item)."""
+    bad = multi_unit_items(db, f"{prefix}sales_all")
+    if len(bad) >= 2:  # as qty_test: one item can be a real oddity
+        raise ValueError(f"item '{bad[0][0]}' has units {bad[0][1]} on its lines (and {len(bad) - 1} more items have several): qty must be in the item's BASE unit "
+                         "and unit = that base unit. Multiply each line's qty by the factor of the line's own unit from the conversion table (when a factor is "
+                         "written in another larger unit, e.g. 1 hộp = 25 vỉ and 1 vỉ = 4 viên, multiply through: 1 hộp = 100 viên), times 1 for lines "
+                         "already in the base unit, and write the base unit in unit")
+
+
+def conversion_factors(db, sql):
+    """{(item, line unit): (factor to the base unit, base unit)} from the shop's conversion table, read by the data: the table whose
+    names are the view's item names (or codes) and whose unit column holds units of the view's lines. A factor written with a unit
+    (a column '<factor> (đơn vị ghi kèm)' from cells like '25 vỉ') is in that unit, so factors multiply through ('1 hộp = 25 vỉ',
+    '1 vỉ = 4 viên': hộp = 100). {} when no table fits."""
+    view = f"({sql})"
+    units = {u for (u,) in db.execute(f"SELECT DISTINCT lower(trim(CAST(unit AS VARCHAR))) FROM {view} WHERE unit IS NOT NULL").fetchall()}
+    names = {n for (n,) in db.execute(f"SELECT DISTINCT lower(trim(CAST(product_name AS VARCHAR))) FROM {view} WHERE product_name IS NOT NULL").fetchall()}
+    codes = {n for (n,) in db.execute(f"SELECT DISTINCT lower(trim(CAST(product_code AS VARCHAR))) FROM {view} WHERE product_code IS NOT NULL").fetchall()}
+    if not units or len(units) < 2:
+        return {}
+    tabs = db.execute("SELECT table_name, estimated_size FROM duckdb_tables() WHERE NOT starts_with(table_name, 'v_') AND NOT starts_with(table_name, '_') "
+                      "AND table_name <> 'calendar' AND estimated_size <= 5000").fetchall()
+    for t, _ in tabs:
+        cols = _columns(db, t)
+        text = [c for c, ty in cols if ty == "VARCHAR" and not c.startswith("_")]
+        nums = [c for c, ty in cols if NUMERIC.match(ty) and not c.startswith("_")]
+        vals = {c: [None if v is None else str(v).strip().lower() for (v,) in db.execute(f"SELECT {quote(c)} FROM {quote(t)}").fetchall()] for c in text}
+        n_rows = len(next(iter(vals.values()), []))
+        if not n_rows or not nums:
+            continue
+        key = next(((c, ref) for c in text for ref in (names, codes) if ref and sum(v in ref for v in vals[c]) >= 0.8 * n_rows), None)
+        unit_cols = [c for c in text if (key is None or c != key[0]) and sum(v in units for v in vals[c] if v) >= 0.9 * max(1, sum(v is not None for v in vals[c]))
+                     and sum(v is not None for v in vals[c]) >= 0.9 * n_rows]
+        if not key or not unit_cols:
+            continue
+        unit_cols.sort(key=lambda c: bool(re.search(r"(^|_)(co_ban|goc|nho_nhat|base)(_|$)", ckey(c))))  # the base-unit column last
+        big, base = unit_cols[0], (unit_cols[1] if len(unit_cols) > 1 else None)
+        positive = [c for c in nums if all((x or 0) > 0 for (x,) in db.execute(f"SELECT {quote(c)} FROM {quote(t)}").fetchall())]
+        fac = next((c for c in positive if re.search(r"(^|_)(ty_le|he_so|quy_doi|factor|rate)(_|$)", ckey(c))), positive[0] if positive else None)
+        if not fac:
+            continue
+        note = f"{fac} (đơn vị ghi kèm)"
+        rows = db.execute(f"SELECT lower(trim({quote(key[0])})), lower(trim({quote(big)})), {quote(fac)}, "
+                          + (f"lower(trim({quote(note)}))" if note in text else "NULL") + ", " + (f"lower(trim({quote(base)}))" if base else "NULL")
+                          + f" FROM {quote(t)}").fetchall()
+        step = {(n, u): (f, lower) for n, u, f, lower, _ in rows}
+        if len(step) < 0.95 * len(rows) or any(f < 1 for f, _ in step.values()):
+            continue  # a conversion table has one row per item and unit, factors of 1 or more: not a sales or price table
+        base_of = {n: b for n, _, _, _, b in rows if b}
+
+        def to_base(n, u, depth=0):
+            f, lower = step[(n, u)]
+            if lower and lower != base_of.get(n) and (n, lower) in step and depth < 4:
+                return f * to_base(n, lower, depth + 1)
+            return f
+        out = {}
+        for n, u in step:
+            b = base_of.get(n) or next((x for (m, x), (_, low) in step.items() if m == n and low and (n, low) not in step), None)
+            out[(key[1] is codes, n, u)] = (to_base(n, u), b)
+        return out
+    return {}
+
+
+def qty_by_table(db, sql):
+    """The view's SELECT with qty in base units and unit = the base unit, the factors from the conversion table
+    (conversion_factors). A line whose price per qty already matches its base unit (a draft that converted it) is kept. None when
+    the shop has no usable table. Already converted = priced per qty below sqrt(factor) x the base unit's price (the geometric middle
+    of the two readings, so a factor of 2 is told apart too)."""
+    f = conversion_factors(db, sql)
+    if not f:
+        return None
+    by_code = next(iter(f))[0]
+    vals = ", ".join(f"('{n.replace(chr(39), chr(39) * 2)}', '{u.replace(chr(39), chr(39) * 2)}', {k}, " + (f"'{b.replace(chr(39), chr(39) * 2)}'" if b else "NULL") + ")"
+                     for (_, n, u), (k, b) in f.items())
+    item = "product_code" if by_code else "product_name"
+    return f"""WITH _b AS ({sql}),
+_f(n, u, k, b) AS (VALUES {vals}),
+_bp AS (SELECT lower(trim(CAST({item} AS VARCHAR))) AS n, median(amount / qty) AS pr FROM _b JOIN _f ON lower(trim(CAST(_b.{item} AS VARCHAR))) = _f.n AND lower(trim(CAST(_b.unit AS VARCHAR))) = _f.b
+        WHERE qty > 0 AND amount > 0 GROUP BY 1)
+SELECT _b.* REPLACE (_b.qty * CASE WHEN _f.k IS NULL THEN 1 WHEN _bp.pr > 0 AND _b.qty > 0 AND _b.amount > 0
+                                   AND _b.amount / _b.qty < sqrt(_f.k) * _bp.pr THEN 1 ELSE _f.k END AS qty, coalesce(_f.b, _b.unit) AS unit)
+FROM _b LEFT JOIN _f ON lower(trim(CAST(_b.{item} AS VARCHAR))) = _f.n AND lower(trim(CAST(_b.unit AS VARCHAR))) = _f.u
+LEFT JOIN _bp ON lower(trim(CAST(_b.{item} AS VARCHAR))) = _bp.n"""
+
+
 def tests(db, prefix, sql):
     catalog_test(db, prefix)
     time_test(db, prefix, sql)
@@ -307,6 +416,8 @@ def tests(db, prefix, sql):
     # added last: a draft failing an older test keeps the error text (and repair) it had
     discount_test(db, prefix, sql)
     status_test(db, prefix, sql)
+    unit_test(db, prefix)
+    cost_test(db, prefix)
 
 
 def check(db, texts):
@@ -413,14 +524,24 @@ def hide_raw(db, meta, sql):
 def describe(db, sql, n, k):
     nv, no = db.execute("SELECT (SELECT count(*) FROM v_sales), (SELECT count(*) FROM v_orders)").fetchone()
     cols = ("order_ts", "product_code", "product_group", "product_name", "qty", "unit", "customer_key", "customer_name", "staff", "channel", "payment")
-    filled = db.execute("SELECT " + ", ".join(f"count({c})" for c in cols) + " FROM v_sales_all").fetchone()
+    filled = db.execute("SELECT " + ", ".join(f"count({c})" for c in cols) + ", count(cost) FROM v_sales_all").fetchone()
     empty = [c for c, x in zip(cols, filled) if not x]
+    groups = [g for (g,) in db.execute("SELECT DISTINCT product_group FROM v_sales WHERE product_group IS NOT NULL ORDER BY 1 LIMIT 13").fetchall()]
+    units = [u for (u,) in db.execute("SELECT DISTINCT unit FROM v_sales WHERE line_kind = 'item' AND unit IS NOT NULL ORDER BY 1 LIMIT 13").fetchall()]
+    said = lambda xs: ", ".join("'" + str(x).replace("'", "''") + "'" for x in xs)
     return (f'"v_sales" ({nv} rows) = item/service lines of VALID orders only (not cancelled, no returned line): revenue = SUM(amount), no status filter needed.\n'
             f'"v_orders" ({no} rows) = VALID orders only, one row per order: order_id, order_date, order_ts, customer_key, customer_name, staff, channel, payment, revenue, n_lines.\n'
             '"v_sales_all" / "v_orders_all" = every line / order with is_cancelled, is_returned, is_valid, line_kind (item|service|adjust).\n'
-            "v_sales columns: order_id, order_date, order_ts, product_code, product_group, product_name, qty, unit, amount, customer_key, customer_name, staff, channel, payment, line_kind. qty is already in base units: for best sellers and quantities sold, use SUM(qty) and do not convert again. "
+            "v_sales columns: order_id, order_date, order_ts, product_code, product_group, product_name, qty, unit, amount, cost, customer_key, customer_name, staff, channel, payment, line_kind. "
+            "qty is already in base units and unit is that base unit: for best sellers use SUM(qty) and do not convert again; "
+            "'bán được bao nhiêu <unit>' (chai, gói, ly ...) counts only the items whose base unit is that unit: SUM(qty) ... WHERE unit = '<unit>'"
+            + (f" (units here: {said(units)})" if 1 < len(units) <= 12 else "") + ". "
+            + (f"product_group values: {said(groups)}; filter the group the question names with product_group = '...'. " if 0 < len(groups) <= 12 else "")
+            + ("Gross profit (lãi gộp) = SUM(amount) - SUM(cost) over v_sales. " if filled[-1] else "")
+            + "Money taken off (voucher, points, discount lines, often negative amounts in v_sales_all) is answered as a positive amount. "
             "A line_kind 'service' line (a fee such as phí phục vụ) counts in revenue but is no item: rank, count or list items WHERE line_kind = 'item'.\n"
             "Customers (rulebook): one customer = one customer_key (the customer code, else the name ignoring case/accents/spaces/punctuation); customer_name = its usual spelling; "
             "both NULL for walk-ins, who are no customer. Count customers with COUNT(DISTINCT customer_key), rank them GROUP BY customer_key and answer with customer_name."
-            + (f" Always NULL here, so this shop does not record them: {', '.join(empty)}; a question that needs one of them is unanswerable (rulebook §7), not 0." if empty else "")
+            + (f" Always NULL here, so this shop does not record them: {', '.join(empty)}; a question that needs one of them is unanswerable (rulebook §7), not 0, "
+               "and is never inferred from other columns (e.g. a group from words in the item names)." if empty else "")
             + f"\nBuilt from the raw tables by this mapping ({n}/{k} independent drafts agree):\n{sql}")
