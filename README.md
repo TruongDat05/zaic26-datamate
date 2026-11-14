@@ -103,6 +103,21 @@ bash training/train_a6000.sh
 
 Cấu hình mặc định: LoRA rank 16, alpha 32, độ dài tối đa 16.384 token, learning rate `1e-4`, batch hiệu dụng 16 trên một GPU và tối đa 2 epoch. Checkpoint được chọn theo dev loss. Kết quả nằm trong `runs/lora/qwen35_sft_a6000/`, gồm `adapter/`, cấu hình, manifest và checkpoint để tiếp tục train. Các biến tùy chỉnh được ghi ở đầu [`training/train_a6000.sh`](training/train_a6000.sh).
 
+Fine-tuning tiếp trên **1× H100 SXM**, dùng `data/fine_tuning_data_20261114_v2/` và adapter khởi tạo `runs/lora/qwen35_sft_4xl40s/adapter`:
+
+```bash
+# Dữ liệu + tokenizer; không nạp weights, không chạy training
+ONLY=data bash training/train_h100.sh
+
+# Kiểm tra fla, preflight bộ nhớ, rồi bắt đầu lượt train mới
+bash training/train_h100.sh
+
+# Tiếp tục chính lượt H100 trên nếu bị gián đoạn
+RESUME=1 bash training/train_h100.sh
+```
+
+[Profile H100](training/configs/qwen35_sft_h100_v2.json): BF16 LoRA r16/alpha32, lr `5e-5`, max length 16.384, micro-batch 1 × accumulation 16, **đủ 1 epoch** (khoảng 230 optimizer step), không dừng sớm; đánh giá cả 212 mẫu dev và giữ checkpoint có dev loss thấp nhất. Preflight kiểm tra cả mẫu có tổng token lớn nhất lẫn mẫu có completion dài nhất. Output: `runs/lora/qwen35_sft_h100_v2/`; mặc định từ chối ghi tiếp vào run đã có checkpoint nếu chưa đặt `RESUME=1`. `PYTHON`, `MODEL_DIR`, `INIT_ADAPTER`, `DATA_DIR`, `OUT` có thể đổi qua biến môi trường; `TOKENIZER_DIR=adapters/sql_rft_v3 ONLY=data` cho phép kiểm tra data khi chưa có base model. Giữ nguyên thư mục dữ liệu v2 và checksum đi kèm.
+
 Đánh giá adapter mới bằng `LORA_DIR=<đường_dẫn_adapter>` trước khi thay mặc định. [`scripts/use_adapter.py`](scripts/use_adapter.py) hỗ trợ `--dry-run` để xem trước việc cập nhật các script chạy, Dockerfile và manifest.
 
 Các [notebook](notebooks/) bao quát EDA, inference, đánh giá, dựng dữ liệu SFT và train LoRA; `00_full_pipeline.ipynb` ghép toàn bộ quy trình.
