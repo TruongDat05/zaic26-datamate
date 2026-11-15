@@ -1,5 +1,6 @@
 """Loader and harness fixes on synthetic books: status words, toppings in the item's cell, staff call names, order-level amounts,
 items in several units, the cost column, rows after today, the debt vote pool and question hints."""
+import json
 import re
 
 import duckdb
@@ -7,6 +8,8 @@ import pandas as pd
 import pytest
 
 from datamate import hints, ingest, prompts, sqlexec, views, voting
+from datamate.pipeline import Pipeline
+from datamate.predict import parse_args
 
 
 def classify(text):
@@ -29,6 +32,61 @@ def shop(tmp_path, files, readme="Sổ bán hàng."):
         (folder / name).write_text(text, encoding="utf-8")
     (folder / "README.md").write_text(readme, encoding="utf-8")
     return tmp_path
+
+
+def test_cached_status_mapping_keeps_views_and_fewshot_without_returns(tmp_path):
+    root = shop(tmp_path, {"ban.csv": "Mã đơn,Ngày,Tên,SL,ĐVT,Tiền,Giá vốn,Ghi chú\n"
+                          "HD1,01/03/2025,Bảo dưỡng,1,lượt,100000,30000,kiểm tra lại tuần sau\n"
+                          "HD2,01/03/2025,Thay nhớt,1,lượt,100000,30000,kiểm tra hàng\n"})
+    (root / "rulebook.md").write_text("Doanh thu không tính đơn huỷ hoặc trả hàng.", encoding="utf-8")
+    bank = tmp_path / "fewshot.jsonl"
+    bank.write_text(json.dumps({"business_id": "other", "question": "Doanh thu hôm nay bao nhiêu?", "type": "number",
+                                "sql": "SELECT SUM(amount) FROM v_sales"}) + "\n", encoding="utf-8")
+    cache = tmp_path / "cached" / "logs"
+    cache.mkdir(parents=True)
+    sql = mapping().replace("false AS is_cancelled, false AS is_returned", '"_huy" AS is_cancelled, "_tra" AS is_returned')
+    (cache / "_views_shop.json").write_text(json.dumps({"sql": sql, "agree": 8, "k": 8, "errors": [], "drafts": []}), encoding="utf-8")
+    args = parse_args(["--data", str(root), "--output", str(tmp_path / "result"), "--model", "unused", "--k", "8",
+                       "--views-from", str(cache.parent), "--fewshot", str(bank)])
+    pipe = Pipeline(args)
+    db, meta = ingest.load_business(root, "shop")
+    try:
+        pipe.reuse_layers({"shop": (db, meta)})
+        prepared = pipe.setup_shop("shop", db, meta)
+        assert prepared.view
+        assert db.execute("SELECT count(*), sum(amount) FROM v_sales").fetchone() == (2, 200000)
+        assert db.execute('SELECT bool_or("_huy" OR "_tra" OR "_don_huy" OR "_don_tra") FROM ban').fetchone() == (False,)
+        chats = pipe.build_chats(prepared, [{"question": "Doanh thu hôm nay bao nhiêu?", "as_of_date": "2025-03-01"}])[0]
+        assert "CANONICAL VIEWS:" in chats[0][1]["content"]
+        assert "EXAMPLES FROM OTHER SHOPS" in chats[1][1]["content"]
+    finally:
+        db.close()
+
+
+def test_neutral_notes_do_not_hide_a_later_return_status():
+    df = ingest.prepare(pd.DataFrame({"Mã đơn": ["HD1", "HD2"], "Ghi chú": ["kiểm tra hàng", "kiểm tra lại tuần sau"],
+                                     "Trạng thái": ["hoàn thành", "trả hàng"]}))
+    assert df["_tra"].tolist() == [False, True]
+    assert df["_don_tra"].tolist() == [False, True]
+
+
+def test_status_compatibility_keeps_cached_monthly_union_members(tmp_path):
+    files = {}
+    for month, count in ((1, 100), (2, 100), (3, 1)):
+        rows = ["Mã đơn,Ngày,Tên,SL,ĐVT,Tiền,Ghi chú"]
+        for i in range(count):
+            note = "trả hàng" if month < 3 and i == 0 else "hoàn thành"
+            rows.append(f"M{month}O{i},01/0{month}/2025,Hàng A,1,cái,100000,{note}")
+        files[f"ban_T0{month}_2025.csv"] = "\n".join(rows) + "\n"
+    db, meta = ingest.load_business(shop(tmp_path, files), "shop")
+    try:
+        sql = mapping(cost=False).replace("false AS is_cancelled, false AS is_returned", '"_huy" AS is_cancelled, "_tra" AS is_returned')
+        sql = sql.replace("FROM ban", "FROM (SELECT * FROM ban_all UNION ALL BY NAME SELECT * FROM ban_t03_2025)")
+        views.build(db, sql)
+        assert db.execute("SELECT count(*), sum(amount) FROM v_sales").fetchone() == (199, 19_900_000)
+        assert {t["name"] for t in meta["tables"]} == {"ban_all", "ban_t03_2025"}
+    finally:
+        db.close()
 
 
 # ---- toppings written in the drink's cell -------------------------------------------------------------------------------------

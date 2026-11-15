@@ -581,7 +581,14 @@ def load_business(root, business, canon=False):
 
     groups = defaultdict(list)
     for n in tables:
-        groups[tuple(c for c, _ in cols(n) if c != "_sheet")].append(n)
+        columns = cols(n)
+        groups[tuple(c for c, _ in columns if c != "_sheet")].append(n)
+        # Preserve the original union members before adding compatibility flags for saved mappings.
+        names = [c for c, _ in columns]
+        if "_huy" not in names and any(ty == "VARCHAR" and re.search(STATUS_COL, ckey(c)) for c, ty in columns):
+            flags = ["_huy", "_tra"] + (["_don_huy", "_don_tra"] if any(re.search(ORDER_ID, ckey(c)) for c in names) else [])
+            for flag in flags:
+                db.execute(f"ALTER TABLE {quote(n)} ADD COLUMN {quote(flag)} BOOLEAN DEFAULT false")
     hidden = set()
     for names in groups.values():
         if len(names) < 2:
