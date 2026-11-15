@@ -168,16 +168,26 @@ SUBJECTIVE = [("thân thiện", "than thien"), ("uy tín", "uy tin"), ("đáng t
               ("có tâm", None), ("đẹp nhất", "dep nhat"), ("hài lòng", None), ("khéo tay", "kheo tay"), ("tử tế", None), ("đáng yêu", "dang yeu")]
 
 
-def subjective_hint(question, rulebook, hits=()):
+def subjective_hint(question, rulebook, hits=(), meta=None):
     """A judgement the rulebook does not define and no column records ('khách thân thiện nhất', 'nhà cung cấp uy tín'): samples ranked
     by some stand-in (most orders, most money) and answered; the rulebook makes such a question unanswerable. A word inside a value
-    the question names (hits: VALUES MATCHING THE QUESTION, e.g. the item 'Siro ăn ngon ...') is that name, not a judgement."""
+    the question names (hits: VALUES MATCHING THE QUESTION, e.g. the item 'Siro ăn ngon ...') is that name, not a judgement.
+    A criterion recorded in a column is not declared absent; a README mention is checked conditionally, since it may deny availability."""
     words = lambda x: " " + " ".join(re.findall(r"\w+", x.lower())) + " "
     q, rb, named = words(question), words(rulebook), words(" ".join(hits))
     if re.search(r" (?:theo|dựa|dua|tính bằng|tinh bang) ", q):  # the question gives its own measure: rulebook, 'câu hỏi nói khác thì làm theo câu hỏi'
         return []
     for acc, plain in SUBJECTIVE:
         if (f" {acc} " in q or (plain and f" {plain} " in q)) and f" {acc} " not in rb and f" {acc} " not in named and not (plain and f" {plain} " in named):
+            if meta:
+                columns = [c[0] for t in meta.get("tables", []) for c in t["columns"]]
+                if any(f" {acc} " in words(c.replace("_", " ")) or (plain and f"_{norm(acc)}_" in f"_{ckey(c)}_") for c in columns):
+                    continue
+                readme = words(meta.get("readme", ""))
+                if f" {acc} " in readme or (plain and f" {plain} " in readme):
+                    return [f"SUBJECTIVE: '{acc}' is mentioned in README. Check whether README defines a measure and SCHEMA records the needed data; "
+                            "a mention alone is not a definition. Follow that measure if recorded; otherwise TYPE: unanswerable with SELECT 1. "
+                            "Do not substitute most orders, most money or most days."]
             return [f"SUBJECTIVE: '{acc}' is a judgement that the rulebook does not define and no column records, so the question is unanswerable "
                     "(rulebook §7): TYPE: unanswerable with SELECT 1. Do not stand in another measure (most orders, most money, most days)."]
     return []
@@ -185,4 +195,4 @@ def subjective_hint(question, rulebook, hits=()):
 
 def question_hints(question, as_of, db, meta, rulebook="", hits=()):
     """Every hint line placed after the date anchors of one question."""
-    return period_hints(question, as_of, db) + grain_hints(question) + lot_hint(question, meta) + subjective_hint(question, rulebook, hits)
+    return period_hints(question, as_of, db) + grain_hints(question) + lot_hint(question, meta) + subjective_hint(question, rulebook, hits, meta)

@@ -295,6 +295,42 @@ def test_subjective_questions_get_the_unanswerable_hint():
     assert not hints.subjective_hint("Khách thân thiện nhất là ai?", rb + " Khách thân thiện: nhiều đơn nhất.")  # defined: answerable
 
 
+@pytest.mark.parametrize("column,readme,has_hint", [
+    ("Điểm uy tín", "", False),
+    ("DiemUyTin", "", False),
+    ("Điểm", "Uy tín nhà cung cấp được ghi bằng cột Điểm; điểm cao hơn là uy tín hơn.", True),
+    ("Điểm", "Uy tin nha cung cap duoc ghi bang cot Diem.", True),
+    ("Điểm", "Không có thông tin uy tín của nhà cung cấp.", True),
+    ("Điểm thân thiện", "", True),
+])
+def test_subjective_hints_respect_the_recorded_criterion(column, readme, has_hint):
+    db = duckdb.connect()
+    try:
+        db.execute(f'CREATE TABLE nha_cung_cap ("Tên" VARCHAR, {ingest.quote(column)} DOUBLE)')
+        db.execute("INSERT INTO nha_cung_cap VALUES ('An', 1), ('Bình', 5)")
+        meta = {"tables": [ingest.profile(db, "nha_cung_cap", "synthetic fixture")], "readme": readme}
+        result = hints.question_hints("Nhà cung cấp uy tín nhất là ai?", "2025-03-01", db, meta,
+                                      "Chỉ trả lời theo tiêu chí có ghi trong dữ liệu.")
+        assert any(h.startswith("SUBJECTIVE:") for h in result) is has_hint
+        if readme:
+            assert "no column records" not in " ".join(result)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("question,readme", [
+    ("Khách dễ tính nhất là ai?", "Dùng cột Thành tiền để tính doanh thu."),
+    ("Khách khó tính nhất là ai?", "Tồn kho tính đến hôm nay được ghi trong sổ."),
+])
+def test_subjective_hints_do_not_confuse_accents_with_unrelated_readme_words(question, readme):
+    meta = {"readme": readme, "tables": []}
+    assert hints.subjective_hint(question, "Chỉ dùng dữ liệu được ghi.", meta=meta)
+
+
+def test_unaccented_rulebook_denial_keeps_unanswerable_hint():
+    assert hints.subjective_hint("Nhà cung cấp uy tín nhất là ai?", "Không có dữ liệu uy tin của nhà cung cấp.")
+
+
 def test_order_slang_is_glossed():
     q = {"question": "Tuần trước tổng bnhiu đh z?", "as_of_date": "2025-09-26", "_hits": []}
     assert "đh = đơn hàng" in prompts.chat("S", "CTX", q)[1]["content"]
