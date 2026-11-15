@@ -63,7 +63,9 @@ def test_h100_profile_and_stage_failures(launcher_env, fail):
         assert c["cuda"] == "0"
         if "config" in c:
             cfg = c["config"]
-            assert (cfg["epochs"], cfg["micro_batch"], cfg["grad_accum"], cfg["dev_max_rows"], cfg["early_stop"]) == (1, 1, 16, 0, 0)
+            assert (cfg["epochs"], cfg["micro_batch"], cfg["grad_accum"], cfg["dev_max_rows"], cfg["early_stop"]) == (1, 1, 16, 64, 0)
+            assert (cfg["eval_steps"], cfg["save_steps"]) == (100, 100)
+            assert cfg["limit_rows"] is None and cfg["max_steps"] == -1
             assert cfg["init_adapter"] == "runs/lora/qwen35_sft_4xl40s/adapter"
             assert (cfg["max_len"], cfg["lr"], cfg["r"], cfg["alpha"]) == (16384, 5e-5, 16, 32)
     if not fail:

@@ -19,11 +19,11 @@
  "max_steps": -1,
  "longest_first": false,
  "logging_steps": 1,
- "eval_steps": 50,
- "dev_max_rows": 0,
+ "eval_steps": 100,
+ "dev_max_rows": 64,
  "early_stop": 0,
  "ce_chunk": 1024,
- "save_steps": 50,
+ "save_steps": 100,
  "save_total_limit": 3,
  "eval_on_start": true
 }
