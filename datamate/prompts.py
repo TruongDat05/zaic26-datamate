@@ -84,6 +84,8 @@ def chat(system, biz_ctx, q, shots=""):
 def repair_hint(err):
     """One generic line for the commonest failure kinds (public trace: 1,933 of 9,912 samples still failed after one repair,
     mostly an empty result or a result of the wrong shape)."""
+    if err.startswith("thinking budget exhausted"):
+        return "Finish with the final TYPE line and one read-only SQL block using the listed schema. Do not start another <think> section.\n"
     if err.startswith(DEBT_LINT):
         # the recipes of the DEBTS block, next to the error: with the old one-line error a solver kept rebuilding the macros from
         # the raw tables over both repair turns (SEARCH: 3 of 63 such samples reached a macro call, the other solver 24 of 24)

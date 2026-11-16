@@ -22,7 +22,7 @@ from .ingest import entity_hits, load_business, norm, profile, schema_text
 from .prompts import NOTES, SYSTEM, SYSTEM_ALT, chat, repair_hint
 from .sqlexec import CHANGE, execute, parse
 from .submission import merge_shards, write_submission
-from .voting import debt_pool, final_answer, top_votes, vote
+from .voting import VOTE_POLICY, debt_pool, final_answer, top_votes, vote
 
 
 def load_questions(a):
@@ -248,7 +248,16 @@ class Pipeline:
     def _repair(self, shop, todo, chats, texts, preds, errs, pairs, prompt_of):
         """Greedy repair turns for failed samples (i, j): the error plus a hint for its kind, up to --repairs turns."""
         a, eng = self.a, self.engine
-        conv = {(i, j): chats[i][prompt_of(j)] + [{"role": "assistant", "content": texts[i][j].split("</think>")[-1].strip()}]
+
+        def repair_context(text):
+            text = text.split("\n#REPAIR\n")[-1]
+            if "<think>" in text and "</think>" not in text:
+                # There is no final query to fix. Do not feed the unfinished thought back: it can fill the context
+                # or reopen thinking in what should be a bounded, non-thinking SQL retry.
+                return "(Reasoning reached its token budget before producing a final TYPE and SQL query.)"
+            return text.split("</think>")[-1].strip()
+
+        conv = {(i, j): chats[i][prompt_of(j)] + [{"role": "assistant", "content": repair_context(texts[i][j])}]
                 for i, j in pairs}
         turns = 0
         for _ in range(a.repairs):
@@ -256,7 +265,9 @@ class Pipeline:
             if not pairs:
                 break
             for i, j in pairs:
-                e = errs[i][j].split(" | ")[-1]
+                last = texts[i][j].split("\n#REPAIR\n")[-1]
+                e = ("thinking budget exhausted before final TYPE and SQL" if "<think>" in last and "</think>" not in last
+                     else errs[i][j].split(" | ")[-1])
                 conv[i, j].append({"role": "user", "content": f"ERROR: {e}\n{repair_hint(e)}Fix the query. Answer again in the same format."})
             routs = eng.chat([conv[ij] for ij in pairs], eng.params(n=1, temperature=0, max_tokens=a.max_tokens), lora=True)
             for (i, j), o in zip(pairs, routs):
@@ -265,7 +276,7 @@ class Pipeline:
                 texts[i][j] += "\n#REPAIR\n" + out
                 conv[i, j].append({"role": "assistant", "content": out})
                 try:
-                    preds[i][j] = self._exec(shop, i, j, out, todo[i]["question"], todo[i].get("as_of_date"))
+                    preds[i][j], errs[i][j] = self._exec(shop, i, j, out, todo[i]["question"], todo[i].get("as_of_date")), None
                 except Exception as e:
                     errs[i][j] += " | " + str(e)[:400]
             turns += len(pairs)
@@ -321,7 +332,7 @@ class Pipeline:
         behind = is_behind()
         debt_q = [bool(shop.debt) and a.debt_route and bool(DEBT_WORDS.search(norm(q["question"]))) for q in todo]
         if a.think_k and not behind:  # adaptive compute: low-agreement questions, and debt questions (thinking samples are the ones calling the macros), get thinking-mode samples
-            hard = [i for i, ps in enumerate(preds) if texts[i] and (debt_q[i] or vote(ps, len(ps))[1] < a.think_below)]
+            hard = [i for i, ps in enumerate(preds) if texts[i] and (debt_q[i] or vote(ps, len(ps), change_q=bool(CHANGE.search(norm(todo[i]["question"]))))[1] < a.think_below)]
             if hard:
                 # with examples available all thinking samples get them: right 86% vs 71.5% on 873 hard train questions
                 hchats = [chats[i][1 if bank else s % len(systems)] for i in hard for s in range(a.think_k)]
@@ -337,9 +348,9 @@ class Pipeline:
                         preds[i].append(self._exec(shop, i, len(texts[i]) - 1, t, todo[i]["question"], todo[i].get("as_of_date"))); errs[i].append(None)
                     except Exception as e:
                         preds[i].append(None); errs[i].append(str(e)[:400])
-                # failed thinking samples get the same repair turns (non-thinking). A cut-off thought has no query to fix
+                # All failed thinking samples get bounded non-thinking retries, including thoughts cut off before SQL.
                 n_repair += self._repair(shop, todo, chats, texts, preds, errs,
-                                         [(i, j) for i in hard for j in range(2 * half, len(texts[i])) if preds[i][j] is None and "</think>" in texts[i][j]], prompt_idx)
+                                         [(i, j) for i in hard for j in range(2 * half, len(texts[i])) if preds[i][j] is None], prompt_idx)
         pools = [debt_pool(ts, 2 * half, dq) if a.debt_route else list(range(len(ts))) for ts, dq in zip(texts, debt_q)]
         return texts, preds, errs, pools, len(repair), n_repair, behind
 
@@ -348,8 +359,9 @@ class Pipeline:
         out = []
         for q, ps, pool in zip(todo, preds, pools):
             voters = [ps[j] for j in pool]
-            ans, conf = vote(voters, len(voters))
-            out.append((final_answer(ans, conf, self.a.threshold, q["_oor"], self.a.answer_unanswerable, bool(CHANGE.search(norm(q["question"])))), ans, conf))
+            change_q = bool(CHANGE.search(norm(q["question"])))
+            ans, conf = vote(voters, len(voters), base_k=2 * self.half, change_q=change_q)
+            out.append((final_answer(ans, conf, self.a.threshold, q["_oor"], self.a.answer_unanswerable, change_q), ans, conf))
         return out
 
     # ---- the run -----------------------------------------------------------------------------------------------------
@@ -383,13 +395,16 @@ class Pipeline:
             for n, (q, (r, ans, conf), ts, ps, es, cs, pool) in enumerate(zip(todo, decisions, texts, preds, errs, chats, pools)):
                 results[q["id"]] = r
                 rec = {"id": q["id"], "business_id": b, "question": q["question"], "final": r, "vote": ans, "conf": conf,
-                       "elapsed_seconds": round(per_q, 2), "samples": [{"text": t, "pred": pr, "error": e} for t, pr, e in zip(ts, ps, es)]}
+                       "elapsed_seconds": round(per_q, 2), "vote_policy": VOTE_POLICY,
+                       "samples": [{"text": t, "pred": pr, "error": e} for t, pr, e in zip(ts, ps, es)]}
                 if a.save_prompts:  # the system message is SYSTEM / SYSTEM_ALT + rulebook (samples 0..K/2-1 / the rest), the user message is shared
                     rec["prompt_user"] = cs[0][1]["content"]
                 tr.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
                 log = question_log(q, r, elapsed_ms, self._calls[n], self._runs[n],
                                    {"code": "src/datamate/voting.py::vote, final_answer",
                                     "inputs": {"answers": [ps[j] for j in pool], "samples": pool, "threshold": a.threshold,
+                                               "vote_policy": VOTE_POLICY, "base_k": 2 * self.half,
+                                               "change_q": bool(CHANGE.search(norm(q["question"]))),
                                                "out_of_range": q["_oor"], "answer_unanswerable": a.answer_unanswerable},
                                     "vote": ans, "share": conf}, layers)
                 (self.log_dir / f"{q['id']}.json").write_text(json.dumps(log, ensure_ascii=False, default=str) + "\n", encoding="utf-8")

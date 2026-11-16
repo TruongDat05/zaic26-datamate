@@ -23,6 +23,46 @@ def test_vote_with_no_executed_sample_abstains():
     assert vote([None, None], 2) == ({"type": "abstain"}, 0.0)
 
 
+def test_failed_adaptive_samples_keep_the_initial_support_budget():
+    plain = [N(7)] * 5 + [N(9)] * 3
+    assert vote(plain, 8, base_k=8) == (N(7), 5 / 8)
+    assert vote(plain + [None] * 4, 12, base_k=8) == (N(7), 5 / 8)
+    assert vote(plain + [N(9), None, None, None], 12, base_k=8) == (N(7), 5 / 9)
+    # Usable contrary evidence still counts: it can replace the initial leader.
+    assert vote(plain + [N(9)] * 4, 12, base_k=8) == (N(9), 7 / 12)
+
+
+def test_a_single_usable_retry_is_not_full_confidence():
+    ans, conf = vote([N(7)] + [None] * 11, 12, base_k=8)
+    assert ans == N(7) and conf == 1 / 8
+    assert final_answer(ans, conf, 0.5) == {"type": "abstain"}
+    # A debt-macro pool smaller than the initial budget keeps its own attempted size.
+    assert vote([N(7), None, None, None], 4, base_k=8) == (N(7), 1 / 4)
+
+
+def test_discarding_failed_retries_does_not_newly_accept_a_tie():
+    ans, conf = vote([N(7)] * 4 + [N(9)] * 4 + [None] * 4, 12, base_k=8)
+    assert conf == 4 / 12 and final_answer(ans, conf, 0.5) == {"type": "abstain"}
+
+
+def test_guarded_results_cannot_skip_retry_or_hide_a_usable_answer():
+    assert vote([N(0)] * 8, 8) == ({"type": "abstain"}, 0.0)
+    assert vote([N(0)] * 8 + [N(7)] * 4, 12, base_k=8) == (N(7), 0.5)
+    empty = [{"type": "list", "answer": []}, {"type": "list", "answer": [0, 0]},
+             {"type": "table", "answer": {"columns": ["name"], "rows": []}}]
+    assert vote(empty + [N(7)], 4) == (N(7), 0.25)
+    assert vote([{"type": "boolean", "answer": False}] * 8, 8) == ({"type": "boolean", "answer": False}, 1.0)
+    assert vote([{"type": "percent", "answer": 0}] * 8, 8, change_q=True) == ({"type": "percent", "answer": 0}, 1.0)
+    assert vote([{"type": "percent", "answer": 0}] * 8, 8) == ({"type": "abstain"}, 0.0)
+
+
+def test_unanswerable_votes_still_need_the_flag_and_support():
+    ans, conf = vote([{"type": "unanswerable"}] * 4 + [None] * 8, 12, base_k=8)
+    assert conf == 0.5
+    assert final_answer(ans, conf, 0.5) == {"type": "abstain"}
+    assert final_answer(ans, conf, 0.5, answer_unanswerable=True) == {"type": "unanswerable"}
+
+
 def test_decide_threshold_zero_and_unanswerable():
     assert decide(N(5), 0.5, 0.5)
     assert not decide(N(5), 0.49, 0.5)

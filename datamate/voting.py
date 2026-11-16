@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 
 from .sqlexec import calls_debt_macro, parse
 
+VOTE_POLICY = "eligible_adaptive_v1"
+
 
 def top_votes(checked):
     """Size of the largest group of drafts with one fingerprint ('none' included). 0 when no draft passed."""
@@ -49,22 +51,49 @@ def debt_pool(texts, start, debt_q=False):
     return list(range(len(texts)))
 
 
-def vote(preds, k):
-    """Majority over executed answers. Confidence = share of all K samples agreeing. A number and a percent of the same
-    value are one answer: Qwen3.5 labels a % change either way (public: 38 abstains were such a split), so the group
-    takes its commoner label, percent on a tie, and that label's commonest value."""
+def empty_answer(ans, change_q=False):
+    """Results the final guard rejects. Keep this same rule in sampling, voting and the final decision.
+
+    False is a real boolean answer. A computed zero percent change is also allowed; zero/empty matches otherwise
+    still require another query rather than being accepted just because several samples repeated them.
+    """
+    kind, v = ans["type"], ans.get("answer")
+    if kind == "boolean":
+        return False
+    if change_q and kind == "percent" and isinstance(v, (int, float)) and not isinstance(v, bool) and v == 0:
+        return False
+    zeros = isinstance(v, list) and v and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x == 0 for x in v)
+    return bool(v in (0, [], None) or zeros or kind == "table" and not v["rows"])
+
+
+def vote(preds, k, *, base_k=None, change_q=False):
+    """Vote over usable answers; guarded zero/empty results cannot hide a supported usable answer or skip retries.
+
+    With adaptive samples, keep at least the original sample budget (`base_k`, capped at this pool's size) in the
+    denominator, and count usable answers beyond it. Failed/guarded extra samples add no evidence against the leader.
+    This never turns one successful retry among many failures into 100% confidence. Tied leaders keep the full K
+    denominator, so discounting failed retries cannot newly accept a tie. Without base_k the denominator stays K.
+
+    A number and a percent of the same value are one answer; the commoner label wins, percent on a label tie.
+    """
     dump = lambda p: json.dumps(p, ensure_ascii=False, default=str, sort_keys=True)
     groups = defaultdict(list)
     for p in preds:
-        if p:
+        if p and p["type"] != "abstain" and (p["type"] == "unanswerable" or not empty_answer(p, change_q)):
             groups[answer_key(p)].append(p)
     if not groups:
         return {"type": "abstain"}, 0.0
+    if k <= 0 or base_k is not None and base_k <= 0:
+        raise ValueError("vote sample budgets must be positive")
     best = max(groups.values(), key=len)  # first seen on a tie, as Counter.most_common
+    sizes = [len(g) for g in groups.values()]
+    denominator = k
+    if base_k is not None and sizes.count(len(best)) == 1:
+        denominator = max(min(base_k, k), sum(sizes))
     types = Counter(p["type"] for p in best)
     kind = "percent" if types["percent"] and types["percent"] >= types["number"] else max(types, key=types.get)
     pick = Counter(dump(p) for p in best if p["type"] == kind).most_common(1)[0][0]
-    return json.loads(pick), len(best) / k
+    return json.loads(pick), len(best) / denominator
 
 
 def decide(ans, conf, threshold, change_q=False):
@@ -73,12 +102,7 @@ def decide(ans, conf, threshold, change_q=False):
     Exception (`change_q`, a question asking how much a value rose/fell between periods): a 0 % change is computed, not a sign that
     nothing matched. ROUND(100.0 * (new - old) / old, 2) is 0 only when both periods have the same nonzero total (an empty base
     gives NULL, which execution rejects), so the 0/empty reading does not apply to it."""
-    v = ans.get("answer")
-    zeros = isinstance(v, list) and v and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x == 0 for x in v)  # [0, 0]: train gold has none in 3000
-    nil = v in (0, [], None) or zeros or ans["type"] == "table" and not ans["answer"]["rows"]
-    if change_q and ans["type"] == "percent" and isinstance(v, (int, float)) and not isinstance(v, bool) and v == 0:
-        nil = False
-    return conf >= threshold and ans["type"] not in ("unanswerable", "abstain") and not (nil and ans["type"] != "boolean")
+    return conf >= threshold and ans["type"] not in ("unanswerable", "abstain") and not empty_answer(ans, change_q)
 
 
 def final_answer(ans, conf, threshold, out_of_range=False, answer_unanswerable=False, change_q=False):
