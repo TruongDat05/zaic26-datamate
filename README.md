@@ -1,172 +1,56 @@
 # DataMate · Zalo AI Challenge 2026
 
-**Đội Zaic26-Foxel** — Hệ thống trả lời câu hỏi tiếng Việt trên dữ liệu bán hàng từ CSV, Excel và SQLite. Mô hình sinh SQL DuckDB, thực thi trên dữ liệu từng cửa hàng và bỏ phiếu theo kết quả để trả lời hoặc từ chối (`abstain`).
+**Đội Zaic26-Foxel · Public Score: 0.78900 · SLM**
 
-| Thành phần | Cấu hình mặc định |
+## Tóm tắt
+
+DataMate trả lời câu hỏi tiếng Việt trên dữ liệu bán hàng có cấu trúc từ CSV, Excel và SQLite. Giải pháp kết hợp **Qwen3.5-9B được fine-tune bằng LoRA**, sinh SQL trên DuckDB và bỏ phiếu theo kết quả thực thi. Dữ liệu SFT tổng hợp, fine-tuning với dữ liệu tăng cường và cơ chế lựa chọn đáp án thích ứng là các thành phần chính của hệ thống. Phiên bản cuối đạt **0.78900 Penalized Accuracy** trên bảng xếp hạng public.
+
+## Phương pháp
+
+![Workflow DataMate: chuẩn bị adapter từ dữ liệu SFT tổng hợp và suy luận SQL](figures/datamate_workflow.png)
+
+1. **Biểu diễn dữ liệu.** Dữ liệu từng cửa hàng được chuẩn hóa và nạp vào DuckDB. README, schema và rulebook cung cấp ngữ cảnh cho mô hình. Model gốc xây dựng các view bán hàng và macro công nợ; các cấu trúc này được kiểm tra trên dữ liệu trước khi sử dụng.
+2. **Fine-tuning.** Qwen3.5-9B được huấn luyện LoRA trên dữ liệu SFT tổng hợp và tiếp tục fine-tuning với dữ liệu tăng cường. Các ví dụ tương tự từ tập train được truy xuất để bổ sung cho một trong hai prompt sinh SQL.
+3. **Sinh và thực thi SQL.** Mỗi câu hỏi có 8 mẫu SQL ban đầu. Hệ thống bổ sung tối đa 4 mẫu thinking khi đồng thuận dưới 75% hoặc khi xử lý câu hỏi công nợ có lớp dữ liệu tương ứng. Truy vấn chạy ở chế độ chỉ đọc với timeout 20 giây. Mẫu lỗi, bao gồm thinking bị cắt trước khi sinh SQL, được sửa tối đa 2 lượt bằng chế độ không thinking.
+4. **Lựa chọn đáp án.** Các kết quả thực thi tương đương được gom nhóm và bỏ phiếu với ngưỡng đồng thuận 0,5. Chính sách bỏ phiếu thích ứng loại kết quả bị bộ lọc chặn khỏi các nhóm tranh phiếu. Với nhóm dẫn đầu duy nhất, mẫu bổ sung lỗi không làm loãng đồng thuận; mẫu số vẫn có sàn theo ngân sách mẫu ban đầu, giới hạn bởi kích thước nhóm bỏ phiếu. Trường hợp hòa giữ mẫu số đầy đủ.
+
+Các quy tắc về kết quả rỗng, giá trị 0, công nợ và miền thời gian được áp dụng trước khi trả lời; `False` và mức thay đổi 0% hợp lệ được giữ lại. Hệ thống xuất đáp án có kiểu trong `submission.jsonl`, dùng `unanswerable` khi dữ liệu không đủ để trả lời và `abstain` khi chưa đủ bằng chứng để đưa ra đáp án.
+
+## Thiết lập
+
+Cấu hình fine-tuning tiếp sử dụng BF16 LoRA trên Qwen3.5-9B:
+
+| Thành phần | Thiết lập |
 | --- | --- |
-| Mô hình | Qwen3.5-9B + LoRA [`sql_rft_v3`](adapters/sql_rft_v3/), khoảng 9,70B tham số tổng cộng |
-| Inference | vLLM 0.32.0, lượng tử hóa FP8, DuckDB 2.0.0 |
-| Đầu ra | `submission.jsonl` với đáp án có kiểu, kèm log và trace |
+| GPU huấn luyện | 1 × H100 SXM |
+| LoRA | Rank 16, alpha 32 |
+| Learning rate | `5e-5` |
+| Độ dài chuỗi tối đa | 16.384 token |
+| Batch hiệu dụng | 16, gồm micro-batch 1 × gradient accumulation 16 |
+| Dữ liệu và số epoch | 3.665 mẫu train, 1 epoch |
+| Validation | 64 mẫu dev cố định từ tập 212 mẫu; đánh giá mỗi 100 step |
+| Chọn checkpoint | Lưu mỗi 100 step, chọn theo dev loss thấp nhất |
 
-## Cách hoạt động
+Inference sử dụng **vLLM 0.32.0**, lượng tử hóa **FP8** và **DuckDB 2.0.0**. Cấu hình chi tiết: [fine-tuning](training/configs/qwen35_sft_h100_v2.json), [inference](scripts/flags.sh) và [bỏ phiếu thích ứng](docs/abstain_codefix_20261115.md).
 
-![Luồng chuẩn bị adapter và inference của DataMate](figures/datamate_workflow.png)
+## Kết quả
 
-1. **Nạp và chuẩn hóa dữ liệu:** đọc dữ liệu, README của từng shop và rulebook của split vào ngữ cảnh; chuẩn hóa bảng trong DuckDB. Model gốc xây dựng các view bán hàng và macro công nợ, sau đó kiểm tra trên dữ liệu.
-2. **Sinh SQL:** dùng hai prompt, một prompt có thêm ví dụ truy xuất từ train. Cấu hình trong [`scripts/flags.sh`](scripts/flags.sh) sinh 8 mẫu SQL, bổ sung tối đa 4 mẫu thinking khi độ đồng thuận thấp hoặc cần xử lý công nợ.
-3. **Thực thi và sửa lỗi:** chỉ chấp nhận một câu truy vấn `SELECT`, chạy trong DuckDB với hạn chế truy cập và timeout 20 giây; sửa mẫu lỗi tối đa 2 lượt.
-4. **Chọn đáp án:** gom các kết quả tương đương và trả lời khi nhóm thắng đạt ít nhất 50% số mẫu trong nhóm bỏ phiếu. Các quy tắc công nợ, kết quả rỗng và kiểm tra miền thời gian được áp dụng trước khi xuất đáp án.
+Chỉ số đánh giá là **Penalized Accuracy**: `PA = (số đúng − số sai) / tổng số câu`, trong đó `abstain` đóng góp 0 điểm. Bảng dưới ghi nhận các phiên bản đã nộp trên bảng xếp hạng public trong quá trình phát triển.
 
-Các kiểu đáp án gồm `number`, `percent`, `date`, `string`, `boolean`, `list`, `table` và `unanswerable`. `unanswerable` biểu thị dữ liệu không đủ để trả lời; `abstain` là quyết định không đưa ra đáp án.
+| Thời điểm | Nhánh | Phiên bản | Public Score |
+| --- | --- | --- | ---: |
+| 31/10/2026 02:23 | APIs/Others | Bản thử nghiệm 1 | 0.46200 |
+| 31/10/2026 02:35 | APIs/Others | Bản thử nghiệm 2 | 0.53900 |
+| 31/10/2026 13:03 | APIs/Others | Điều chỉnh template | 0.56600 |
+| 12/11/2026 21:45 | SLM | Dữ liệu tổng hợp + SFT | 0.70000 |
+| 15/11/2026 17:26 | SLM | Fine-tuning + tăng cường dữ liệu | 0.78300 |
+| **15/11/2026 17:50** | **SLM** | **Hoàn thiện logic abstain** | **0.78900** |
 
-## Cài đặt
+Điểm public tăng từ **0.70000** ở mốc SFT ban đầu lên **0.78900** ở phiên bản cuối, chênh lệch **0.08900** điểm PA. Hai phiên bản cuối lần lượt đạt **0.78300** và **0.78900**, tương ứng trước và sau cập nhật logic `abstain`.
 
-Yêu cầu **Python ≥ 3.12**, Git LFS và môi trường CUDA tương thích với vLLM. Cấu hình inference đã được ghi nhận trên GPU Blackwell 24 GB; công thức train BF16 hướng tới GPU hỗ trợ BF16 với VRAM từ 40 GB. Đọc dữ liệu, chấm điểm và các bài kiểm tra offline có thể chạy bằng CPU.
+## Tài liệu và mã nguồn
 
-```bash
-git clone https://github.com/TruongDat05/zaic26-datamate.git
-cd zaic26-datamate
-git lfs install
-git lfs pull
+[Đề bài](docs/challenge.md) · [Dữ liệu](docs/data-notes.md) · [EDA](notebooks/01_eda.ipynb) · [Huấn luyện](notebooks/02_train_lora.ipynb) · [Đóng gói](docker/training_code_README.md) · [Docker](docker/README.md).
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[llm,dev]"
-
-hf download Qwen/Qwen3.5-9B \
-  --revision c202236235762e1c871ad0ccb60c8ee5ba337b9a \
-  --local-dir models/Qwen3.5-9B
-```
-
-Nếu chỉ làm việc trên CPU, cài `pip install -e ".[dev]"` và bỏ qua bước tải model.
-
-**Dữ liệu và tài nguyên cần chuẩn bị riêng:** repo không phân phối dữ liệu thi, dữ liệu SFT hay các tệp sinh từ dữ liệu thi.
-
-| Đường dẫn | Nội dung và mục đích |
-| --- | --- |
-| `data/train/`, `data/public_test/` | Mỗi split gồm `questions.jsonl`, `rulebook.md`, `calendar.csv`, `data/<shop>/`; train có thêm `answers.jsonl` để đánh giá |
-| `assets/fewshot_bank.jsonl` | Ngân hàng ví dụ train cho các script inference và Docker; tạo từ trace chạy trên train bằng [`training/build_fewshot_bank.py`](training/build_fewshot_bank.py) |
-| `models/Qwen3.5-9B/` | Trọng số và tokenizer của model gốc |
-| `data/data/` | `train.jsonl`, `dev.jsonl`, `sft_manifest.json` của bộ SFT tổng hợp, cần cho train BF16 |
-| `configs/public_v9/` | View và macro công nợ đã lưu; chỉ cần khi chạy public với `FRESH=0` |
-
-## Inference và đánh giá
-
-Các lệnh dưới đây chạy từ thư mục gốc repo, sau khi chuẩn bị model, adapter và ngân hàng ví dụ. Mỗi GPU xử lý một nhóm shop; script gộp kết quả thành `submission.jsonl`.
-
-```bash
-# Dựng mới view và lớp công nợ, cùng cách khởi tạo dữ liệu của Docker
-FRESH=1 bash scripts/run_public.sh runs/public_fresh
-
-# Dùng lại cấu hình shop đã lưu trong configs/public_v9/
-bash scripts/run_public.sh runs/public_cached
-
-# Chạy và chấm 632 câu holdout của train
-bash scripts/run_holdout.sh runs/holdout
-
-# Kiểm tra định dạng và độ đầy đủ của file nộp
-python -m datamate.submission check runs/public_fresh/submission.jsonl \
-  --questions data/public_test/questions.jsonl
-```
-
-Có thể ghi đè `NUM_GPUS`, `MODEL_DIR`, `LORA_DIR`, `GPU_MEM`, `ENGINE`, `QUANT` và `PYTHON` qua biến môi trường. Xem tùy chọn CLI bằng `python -m datamate.predict --help`; các script dùng cấu hình chung trong `scripts/flags.sh`, có thể khác mặc định của CLI.
-
-Để chấm một lượt chạy trên train và phân tích lỗi:
-
-```bash
-python -m datamate.scoring --data data/train \
-  --pred runs/train/submission.jsonl --output runs/train/score.json
-python analysis/err.py runs/train
-```
-
-Penalized Accuracy được tính bằng `(số đúng − số sai) / tổng số câu`; bỏ trống được 0 điểm. Scorer trong repo là bản tái hiện quy tắc công bố, không phải mã chấm chính thức. Inference không đọc đáp án train.
-
-**Giới hạn đánh giá:** LoRA v3 đã học một phần câu trong `splits/holdout600.txt`, nên holdout chỉ phù hợp để kiểm tra hồi quy, không phải đánh giá độc lập. Điểm public lịch sử dùng các lớp dữ liệu đã lưu và không đại diện cho một lượt `FRESH=1`. Xem [lịch sử điểm và giới hạn](docs/leaderboard.md).
-
-## Huấn luyện LoRA
-
-Repo có hai hướng huấn luyện: [`train_lora.py`](training/train_lora.py) dùng QLoRA 4-bit cho chuỗi adapter v1–v3; [`train_lora_bf16.py`](training/train_lora_bf16.py) dùng bộ SFT tổng hợp để huấn luyện adapter mới trên model gốc BF16. Adapter mặc định của inference vẫn là `sql_rft_v3`.
-
-Chạy công thức BF16 trong môi trường riêng:
-
-```bash
-python3 -m venv .venv-train
-.venv-train/bin/pip install -r training/requirements_bf16.txt
-.venv-train/bin/pip install --no-deps fla-core==0.6.0
-
-# Kiểm tra dữ liệu bằng tokenizer, không cần GPU
-ONLY=data bash training/train_a6000.sh
-
-# Kiểm tra kernel, bộ nhớ và huấn luyện; tự tiếp tục nếu có checkpoint phù hợp
-bash training/train_a6000.sh
-```
-
-Cấu hình mặc định: LoRA rank 16, alpha 32, độ dài tối đa 16.384 token, learning rate `1e-4`, batch hiệu dụng 16 trên một GPU và tối đa 2 epoch. Checkpoint được chọn theo dev loss. Kết quả nằm trong `runs/lora/qwen35_sft_a6000/`, gồm `adapter/`, cấu hình, manifest và checkpoint để tiếp tục train. Các biến tùy chỉnh được ghi ở đầu [`training/train_a6000.sh`](training/train_a6000.sh).
-
-Fine-tuning tiếp trên **1× H100 SXM**, dùng `data/fine_tuning_data_20261114_v2/` và adapter khởi tạo `runs/lora/qwen35_sft_4xl40s/adapter`:
-
-```bash
-# Dữ liệu + tokenizer; không nạp weights, không chạy training
-ONLY=data bash training/train_h100.sh
-
-# Kiểm tra fla, preflight bộ nhớ, rồi bắt đầu lượt train mới
-bash training/train_h100.sh
-
-# Tiếp tục chính lượt H100 trên nếu bị gián đoạn
-RESUME=1 bash training/train_h100.sh
-```
-
-[Profile H100](training/configs/qwen35_sft_h100_v2.json): BF16 LoRA r16/alpha32, lr `5e-5`, max length 16.384, micro-batch 1 × accumulation 16, **đủ 3.665 mẫu train và 1 epoch** (khoảng 230 optimizer step), không dừng sớm; đánh giá mỗi **100 step** trên **64 mẫu dev cố định** chọn từ 212 mẫu, lưu checkpoint mỗi **100 step** và giữ checkpoint có dev loss thấp nhất. Preflight kiểm tra cả mẫu có tổng token lớn nhất lẫn mẫu có completion dài nhất. Output: `runs/lora/qwen35_sft_h100_v2/`; mặc định từ chối ghi tiếp vào run đã có checkpoint nếu chưa đặt `RESUME=1`. `PYTHON`, `MODEL_DIR`, `INIT_ADAPTER`, `DATA_DIR`, `OUT` có thể đổi qua biến môi trường; `TOKENIZER_DIR=adapters/sql_rft_v3 ONLY=data` cho phép kiểm tra data khi chưa có base model. Giữ nguyên thư mục dữ liệu v2 và checksum đi kèm.
-
-Đánh giá adapter mới bằng `LORA_DIR=<đường_dẫn_adapter>` trước khi thay mặc định. [`scripts/use_adapter.py`](scripts/use_adapter.py) hỗ trợ `--dry-run` để xem trước việc cập nhật các script chạy, Dockerfile và manifest.
-
-Các [notebook](notebooks/) bao quát EDA, inference, đánh giá, dựng dữ liệu SFT và train LoRA; `00_full_pipeline.ipynb` ghép toàn bộ quy trình.
-
-## Docker
-
-Docker dùng base image vLLM 0.32.0 và đóng gói model, adapter, ngân hàng ví dụ cùng mã và bằng chứng huấn luyện. Trước khi build, cần chuẩn bị các dữ liệu SFT, checkpoint và log mà [`scripts/pack_training_code.py`](scripts/pack_training_code.py) yêu cầu; xem [tài liệu đóng gói huấn luyện](docker/training_code_README.md).
-
-```bash
-python3 scripts/pack_training_code.py
-docker build --platform linux/amd64 -f docker/Dockerfile -t datamate:final .
-
-mkdir -p result
-docker run --rm --gpus '"device=0,1"' --network none --shm-size=16g \
-  --entrypoint bash \
-  -v /absolute/path/to/split:/data:ro \
-  -v "$PWD/result:/result" \
-  datamate:final /code/predict.sh
-```
-
-Container đọc `/data`, ghi `/result/submission.jsonl`, log từng câu tại `/result/logs/` và tệp làm việc tại `/result/work/`. File nộp được cập nhật sau mỗi shop; mỗi tiến trình có giới hạn thời gian 5 giờ 50 phút. Docker luôn dựng mới view và macro công nợ.
-
-Theo [`docker/model_manifest.json`](docker/model_manifest.json), image và thời gian chạy trên RTX 5090 chưa được xác nhận. Giới hạn thời gian trong script không bảo đảm hoàn thành toàn bộ tập private. Chi tiết giao diện và cách chạy: [docker/README.md](docker/README.md).
-
-## Cấu trúc và kiểm tra
-
-```text
-datamate/     Pipeline, CLI, đọc dữ liệu, SQL, bỏ phiếu và chấm điểm
-training/     Dựng dữ liệu SFT và huấn luyện LoRA
-scripts/      Chạy inference, đổi adapter, đóng gói và kiểm tra tĩnh
-docker/       Image, entrypoint và tài liệu bản nộp
-adapters/     LoRA mặc định, lưu trọng số bằng Git LFS
-analysis/     Phân tích lỗi và phát lại trace offline
-notebooks/    Hướng dẫn quy trình từ EDA đến huấn luyện
-tests/        Kiểm thử tự động
-splits/       Danh sách câu hỏi cho các tập con
-docs/         Đề bài, ghi chú dữ liệu và lịch sử điểm
-figures/      Hình minh họa workflow
-```
-
-```bash
-python -m pytest -q
-python scripts/rule_check.py
-```
-
-`rule_check.py` kiểm tra tĩnh mã và cấu hình; kết quả không thay thế kiểm chứng runtime hoặc chấm thi. Các thư mục `data/`, `models/`, `runs/` và tài nguyên sinh từ dữ liệu được loại khỏi Git.
-
-## License và nguồn gốc
-
-Mã nguồn và adapter của dự án theo [MIT License](LICENSE). Model Qwen3.5-9B được tải riêng và theo Apache-2.0; dữ liệu của ban tổ chức không thuộc giấy phép repo. Dự án phát triển từ [baseline AIO](https://github.com/hugebenevolence/zalo-ai-challenge-datamate-26) (MIT).
-
-Tài liệu bổ sung: [Đề bài](docs/challenge.md) · [Ghi chú dữ liệu](docs/data-notes.md) · [Lịch sử điểm](docs/leaderboard.md).
+Dự án phát triển từ [baseline AIO](https://github.com/hugebenevolence/zalo-ai-challenge-datamate-26). Mã nguồn và adapter theo [MIT License](LICENSE); model Qwen3.5-9B theo Apache-2.0. Dữ liệu của ban tổ chức được quản lý riêng.
